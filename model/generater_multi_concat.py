@@ -2,11 +2,25 @@ r"""undocumented"""
 
 import torch
 from torch import nn
-from fastNLP.models.seq2seq_model import Seq2SeqModel
-from fastNLP.modules.decoder.seq2seq_decoder import Seq2SeqDecoder, State
+from .bart_multi_concat import Seq2SeqModel, Seq2SeqDecoder, State
 import torch.nn.functional as F
-from fastNLP.core.utils import _get_model_device
+#from fastNLP.core.utils import _get_model_device
 from functools import partial
+
+def _get_model_device(model):
+    r"""
+    传入一个nn.Module的模型，获取它所在的device
+
+    :param model: nn.Module
+    :return: torch.device,None 如果返回值为None，说明这个模型没有任何参数。
+    """
+    assert isinstance(model, nn.Module)
+
+    parameters = list(model.parameters())
+    if len(parameters) == 0:
+        return None
+    else:
+        return parameters[0].device
 
 
 class SequenceGeneratorModel(nn.Module):
@@ -126,6 +140,7 @@ class SequenceGenerator:
         self.pad_token_id = pad_token_id
         self.restricter = restricter
         self.max_len_a = max_len_a
+        self.top_k = top_k
 
     def set_new_generator(self, max_length=-1, max_len_a=-1, num_beams=-1,
                           repetition_penalty=-1, length_penalty=-1, restricter=-1):
@@ -146,7 +161,7 @@ class SequenceGenerator:
                                      bos_token_id=self.bos_token_id, eos_token_id=self.eos_token_id,
                                      repetition_penalty=repetition_penalty,
                                      length_penalty=length_penalty, pad_token_id=self.pad_token_id,
-                                     restricter=restricter,top_k= top_k)
+                                     restricter=restricter,top_k= self.top_k)
 
     @torch.no_grad()
     def generate(self, img_feat_, state, tokens=None):

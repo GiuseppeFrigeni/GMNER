@@ -1,10 +1,23 @@
 
-from fastNLP import MetricBase
-from fastNLP.core.metrics import _compute_f_pre_rec
+from fastNLP import Metric
+#from fastNLP.core.metrics import _compute_f_pre_rec
 import numpy as np
 
+def _compute_f_pre_rec(beta_square, tp, fn, fp):
+    r"""
 
-class Seq2SeqSpanMetric(MetricBase):
+    :param tp: int, true positive
+    :param fn: int, false negative
+    :param fp: int, false positive
+    :return: (f, pre, rec)
+    """
+    pre = tp / (fp + tp + 1e-13)
+    rec = tp / (fn + tp + 1e-13)
+    f = (1 + beta_square) * pre * rec / (beta_square * pre + rec + 1e-13)
+
+    return f, pre, rec
+
+class Seq2SeqSpanMetric(Metric):
     def __init__(self, eos_token_id, num_labels, region_num,target_type='bpe',print_mode = False):
         super(Seq2SeqSpanMetric, self).__init__()
         self.eos_token_id = eos_token_id
