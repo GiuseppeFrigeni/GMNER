@@ -24,8 +24,8 @@ from torch import optim
 from fastNLP import BucketSampler, GradientClipCallback, cache_results, EarlyStopCallback, SequentialSampler
 
 from model.callbacks import WarmupCallback
-from fastNLP.core.sampler import SortedSampler
-from fastNLP.core.sampler import  ConstTokenNumSampler
+#from fastNLP.core.sampler import SortedSampler
+#from fastNLP.core.sampler import  ConstTokenNumSampler
 from model.callbacks import FitlogCallback
 from fastNLP import DataSetIter
 from tqdm import tqdm, trange

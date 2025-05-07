@@ -2,9 +2,13 @@ import torch
 from .modeing_bart_multi_concat import BartEncoder, BartDecoder, BartModel
 from transformers import BartTokenizer
 from fastNLP import seq_len_to_mask
-from fastNLP.modules import Seq2SeqEncoder, Seq2SeqDecoder, State
+
+#from fastNLP.modules import Seq2SeqEncoder, Seq2SeqDecoder, State
+#from fastNLP.models import Seq2SeqModel
+
+from allennlp.modules.seq2seq_encoders import Seq2SeqEncoder
+
 import torch.nn.functional as F
-from fastNLP.models import Seq2SeqModel
 from torch import nn
 import math
 

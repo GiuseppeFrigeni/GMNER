@@ -1,8 +1,8 @@
 for se in '42' '16' '34' '2023' '25' '23' '2022'
 do
-python train.py \
+python3 train.py \
     --bart_name facebook/bart-base \
-    --n_epochs 30 \
+    --n_epochs 1 \
     --seed 42 \
     --datapath  ./Twitter10000/txt \
     --image_feature_path ./Twitter10000_VinVL \

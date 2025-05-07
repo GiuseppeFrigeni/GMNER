@@ -1,4 +1,4 @@
-from fastNLP.core.callback import Callback
+from fastNLP.callbacks import Callback
 from fastNLP import DataSet, Tester
 import fitlog
 from copy import deepcopy

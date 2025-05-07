@@ -4,11 +4,11 @@ from fastNLP.io.pipe.utils import iob2, iob2bioes
 from fastNLP import DataSet, Instance
 from fastNLP.io import Pipe
 from transformers import AutoTokenizer
-from fastNLP.core.metrics import _bio_tag_to_spans
+#from fastNLP.core.metrics import bio_tag_to_spans
 from fastNLP.io import DataBundle
 import numpy as np
 from itertools import chain
-from fastNLP import Const
+#from fastNLP import Const
 from functools import cmp_to_key
 import json
 from copy import deepcopy
@@ -17,6 +17,33 @@ import os
 import torch
 import torchvision
 
+def bio_tag_to_spans(tags, ignore_labels=None):
+    """
+
+    :param tags: List[str],
+    :param ignore_labels: List[str], 在该list中的label将被忽略
+    :return: List[Tuple[str, List[int, int]]]. [(label，[start, end])]
+    """
+    ignore_labels = set(ignore_labels) if ignore_labels else set()
+
+    spans = []
+    prev_bio_tag = None
+    for idx, tag in enumerate(tags):
+        tag = tag.lower()
+        bio_tag, label = tag[:1], tag[2:]
+        if bio_tag == 'b':
+            spans.append((label, [idx, idx]))
+        elif bio_tag == 'i' and prev_bio_tag in ('b', 'i') and label==spans[-1][0]:
+            spans[-1][1][1] = idx
+        elif bio_tag == 'o': # o tag does not count
+            pass
+        else:
+            spans.append((label, [idx, idx]))
+        prev_bio_tag = bio_tag
+    return [(span[0], (span[1][0], span[1][1]))
+                    for span in spans
+                        if span[0] not in ignore_labels
+            ]
 
 class BartNERPipe(Pipe):
     def __init__(self,image_feature_path=None, 
@@ -356,7 +383,7 @@ class TwitterNer(ConllLoader):
             img_id = raw_words[0][6:]
             raw_words = raw_words[1:]  #去除第一个token raw_words[0]='IMGID:XXX
             target = iob2(target)      #同上
-            spans = _bio_tag_to_spans(target)  #Example:('person_other', (8, 10))  #从0开始
+            spans = bio_tag_to_spans(target)  #Example:('person_other', (8, 10))  #从0开始
             coarse_target = iob2(coarse_target)
             entities = []
             entity_tags = []

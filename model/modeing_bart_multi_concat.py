@@ -24,8 +24,16 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.nn import CrossEntropyLoss
 
-from transformers.modeling_bart import * 
-# from transformers.models.bart.modeling_bart import *
+#from transformers.modeling_bart import * 
+#from transformers.models.bart.modeling_bart import *
+
+from transformers.activations import ACT2FN
+from transformers import PreTrainedModel, BartConfig
+from transformers.modeling_outputs import BaseModelOutput, BaseModelOutputWithPast, Seq2SeqModelOutput, Seq2SeqLMOutput, Seq2SeqSequenceClassifierOutput, Seq2SeqQuestionAnsweringModelOutput
+from transformers.utils import add_start_docstrings, add_code_sample_docstrings
+from transformers.utils import replace_return_docstrings, logging, add_end_docstrings 
+
+
 
 logger = logging.get_logger(__name__)
 
@@ -479,7 +487,6 @@ class DecoderLayer(nn.Module):
             layer_state,
         )  # just self_attn weights for now, following t5, layer_state = cache for decoding
 
-
 class BartDecoder(nn.Module):
     """
     Transformer decoder consisting of *config.decoder_layers* layers. Each layer
@@ -846,13 +853,6 @@ class LearnedPositionalEmbedding(nn.Embedding):
 
 
 def LayerNorm(normalized_shape, eps=1e-5, elementwise_affine=True):  ### elementwise_affine 有参数,norm 之后加一个线性变换
-    if torch.cuda.is_available():
-        try:
-            from apex.normalization import FusedLayerNorm
-
-            return FusedLayerNorm(normalized_shape, eps, elementwise_affine)
-        except ImportError:
-            pass
     return torch.nn.LayerNorm(normalized_shape, eps, elementwise_affine)
 
 
@@ -866,10 +866,12 @@ def _get_shape(t):
     return getattr(t, "shape", None)
 
 
+
 @add_start_docstrings(
     "The bare BART Model outputting raw hidden-states without any specific head on top.",
     BART_START_DOCSTRING,
 )
+
 class BartModel(PretrainedBartModel):
     def __init__(self, config: BartConfig):
         super().__init__(config)
@@ -882,9 +884,9 @@ class BartModel(PretrainedBartModel):
 
         self.init_weights()
 
-    @add_start_docstrings_to_callable(BART_INPUTS_DOCSTRING)
+    #@add_start_docstrings_to_callable(BART_INPUTS_DOCSTRING)
     @add_code_sample_docstrings(
-        tokenizer_class=_TOKENIZER_FOR_DOC,
+        #tokenizer_class=_TOKENIZER_FOR_DOC,
         checkpoint="facebook/bart-large",
         output_type=Seq2SeqModelOutput,
         config_class=_CONFIG_FOR_DOC,
@@ -1017,7 +1019,7 @@ class BartForConditionalGeneration(PretrainedBartModel):
             new_bias = torch.cat([self.final_logits_bias, extra_bias], dim=1)
         self.register_buffer("final_logits_bias", new_bias)
 
-    @add_start_docstrings_to_callable(BART_INPUTS_DOCSTRING)
+    #@add_start_docstrings_to_callable(BART_INPUTS_DOCSTRING)
     @replace_return_docstrings(output_type=Seq2SeqLMOutput, config_class=_CONFIG_FOR_DOC)
     @add_end_docstrings(BART_GENERATION_EXAMPLE)
     def forward(
@@ -1180,9 +1182,9 @@ class BartForSequenceClassification(PretrainedBartModel):
         self.model._init_weights(self.classification_head.dense)
         self.model._init_weights(self.classification_head.out_proj)
 
-    @add_start_docstrings_to_callable(BART_INPUTS_DOCSTRING)
+    #@add_start_docstrings_to_callable(BART_INPUTS_DOCSTRING)
     @add_code_sample_docstrings(
-        tokenizer_class=_TOKENIZER_FOR_DOC,
+        #tokenizer_class=_TOKENIZER_FOR_DOC,
         checkpoint="facebook/bart-large",
         output_type=Seq2SeqSequenceClassifierOutput,
         config_class=_CONFIG_FOR_DOC,
@@ -1266,9 +1268,9 @@ class BartForQuestionAnswering(PretrainedBartModel):
 
         self.model._init_weights(self.qa_outputs)
 
-    @add_start_docstrings_to_callable(BART_INPUTS_DOCSTRING)
+    #@add_start_docstrings_to_callable(BART_INPUTS_DOCSTRING)
     @add_code_sample_docstrings(
-        tokenizer_class=_TOKENIZER_FOR_DOC,
+        #tokenizer_class=_TOKENIZER_FOR_DOC,
         checkpoint="facebook/bart-large",
         output_type=Seq2SeqQuestionAnsweringModelOutput,
         config_class=_CONFIG_FOR_DOC,
