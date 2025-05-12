@@ -277,6 +277,24 @@ class BartNERPipe(Pipe):
                     else:
                         raise RuntimeError("Not support other tagging")
                     cur_pair.extend([p + target_shift for p in cur_pair_])
+                    print(f"Processing img_id: {ins.get('img_id', 'N/A')}, entity index: {idx}, tag: {tag}")
+                try:
+                    region_val_str = str(int(region_label[idx][-1]))
+                    print(f"  Region label value string: '{region_val_str}'")
+                    print(f"  Entity tag: '{tag}'")
+                    print(f"  Current mapping2targetid keys: {list(self.mapping2targetid.keys())}")
+                    print(f"  Current cur_pair before assertion: {cur_pair}") # <--- Check its content/length
+
+                    # Explicitly check keys before lookup
+                    if region_val_str not in self.mapping2targetid:
+                        print(f"  ERROR: Region key '{region_val_str}' not in mapping2targetid!")
+                    if tag not in self.mapping2targetid:
+                        print(f"  ERROR: Entity tag '{tag}' not in mapping2targetid!")
+
+                except IndexError:
+                    print(f"  ERROR: IndexError accessing region_label[{idx}][-1]. len={len(region_label)}")
+                except Exception as e:
+                    print(f"  ERROR: Unexpected exception before line 280: {e}")
                 for _, (j, word_idx) in enumerate(zip((cur_pair[0], cur_pair[-1]), (0, -1))):
                     j = j - target_shift
                     if 'word' == self.target_type or word_idx != -1:
