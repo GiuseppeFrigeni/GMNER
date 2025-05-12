@@ -304,7 +304,7 @@ class BartEncoder(nn.Module):
         self.max_source_positions = config.max_position_embeddings
 
         self.embed_tokens = embed_tokens
-        if config.static_position_embeddings:
+        if getattr(config, 'static_position_embeddings', False):
             self.embed_positions = SinusoidalPositionalEmbedding(
                 config.max_position_embeddings, embed_dim, self.padding_idx
             )
