@@ -1,4 +1,4 @@
-for se in '42' '16' '34' '2023' '25' '23' '2022'
+for se in '42' #'16' '34' '2023' '25' '23' '2022'
 do
 python3 train.py \
     --bart_name facebook/bart-base \

@@ -187,7 +187,7 @@ data_bundle, tokenizer, mapping2id = get_data()
 print(f'max_len_a:{max_len_a}, max_len:{max_len}')
 
 print(data_bundle)
-print("The number of tokens in tokenizer ", len(tokenizer.decoder))  
+print("The number of tokens in tokenizer ", tokenizer.vocab_size)  
 
 bos_token_id = 0
 eos_token_id = 1

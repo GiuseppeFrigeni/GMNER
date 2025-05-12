@@ -263,7 +263,15 @@ class BartNERPipe(Pipe):
                     end = entity[2 * i + 1]
                     cur_pair_ = []
                     if self.target_type == 'word':
-                        cur_pair_.extend([cum_lens[k] for k in list(range(start, end))])
+                        # Generate indices from start up to AND INCLUDING end
+                        word_indices_in_span = list(range(start, end + 1))
+                        # Check if span is valid before accessing cum_lens
+                        if not word_indices_in_span:
+                            print(f"Warning: Empty span for entity '{' '.join(raw_words[start:end+1])}' with indices [{start}, {end}] in img_id {img_id}. Skipping assertion.")
+                        else:
+                            cur_pair_.extend([cum_lens[k] for k in word_indices_in_span])
+
+                        #cur_pair_.extend([cum_lens[k] for k in list(range(start, end))])
                     elif self.target_type == 'span':
                         cur_pair_.append(cum_lens[start])
                         cur_pair_.append(cum_lens[end]-1)  # it is more reasonable to use ``cur_pair_.append(cum_lens[end-1])``
@@ -277,13 +285,13 @@ class BartNERPipe(Pipe):
                     else:
                         raise RuntimeError("Not support other tagging")
                     cur_pair.extend([p + target_shift for p in cur_pair_])
-                    print(f"Processing img_id: {ins.get('img_id', 'N/A')}, entity index: {idx}, tag: {tag}")
+                    #print(f"Processing img_id: {ins.get('img_id', 'N/A')}, entity index: {idx}, tag: {tag}")
                 try:
                     region_val_str = str(int(region_label[idx][-1]))
-                    print(f"  Region label value string: '{region_val_str}'")
-                    print(f"  Entity tag: '{tag}'")
-                    print(f"  Current mapping2targetid keys: {list(self.mapping2targetid.keys())}")
-                    print(f"  Current cur_pair before assertion: {cur_pair}") # <--- Check its content/length
+                    #print(f"  Region label value string: '{region_val_str}'")
+                    #print(f"  Entity tag: '{tag}'")
+                    #print(f"  Current mapping2targetid keys: {list(self.mapping2targetid.keys())}")
+                    #print(f"  Current cur_pair before assertion: {cur_pair}") # <--- Check its content/length
 
                     # Explicitly check keys before lookup
                     if region_val_str not in self.mapping2targetid:
@@ -300,11 +308,11 @@ class BartNERPipe(Pipe):
                     if 'word' == self.target_type or word_idx != -1:
                         assert _word_bpes[j] == \
                                self.tokenizer.convert_tokens_to_ids(
-                                   self.tokenizer.tokenize(entities[idx][word_idx], add_prefix_space=True)[:1])[0]
+                                   self.tokenizer.tokenize(entities[idx][word_idx])[:1])[0]
                     else:
                         assert _word_bpes[j] == \
                                self.tokenizer.convert_tokens_to_ids(
-                                   self.tokenizer.tokenize(entities[idx][word_idx], add_prefix_space=True)[-1:])[0]
+                                   self.tokenizer.tokenize(entities[idx][word_idx])[-1:])[0]
                 assert all([cur_pair[i] < cum_lens[-1] + target_shift for i in range(len(cur_pair))])
                                
                 cur_pair.append(self.mapping2targetid[str(int(region_label[idx][-1]))] +2)  ##  entity-region relation
@@ -325,15 +333,25 @@ class BartNERPipe(Pipe):
 
         data_bundle.apply_more(prepare_target)  
 
-        data_bundle.set_ignore_type('target_span', 'entities') 
-        data_bundle.set_ignore_type('image_tag')
-        data_bundle.set_pad_val('tgt_tokens', 1)  # 设置为eos所在的id
-        data_bundle.set_pad_val('src_tokens', self.tokenizer.pad_token_id)
+        #data_bundle.set_ignore_type('target_span', 'entities') 
+        #data_bundle.set_ignore_type('image_tag')
+        #data_bundle.set_pad_val('tgt_tokens', 1)  # 设置为eos所在的id
+        #data_bundle.set_pad_val('src_tokens', self.tokenizer.pad_token_id)
+        #data_bundle.apply_field(lambda x: len(x), field_name='src_tokens', new_field_name='src_seq_len')
+        #data_bundle.apply_field(lambda x: len(x), field_name='tgt_tokens', new_field_name='tgt_seq_len')
 
-        data_bundle.apply_field(lambda x: len(x), field_name='src_tokens', new_field_name='src_seq_len')
-        data_bundle.apply_field(lambda x: len(x), field_name='tgt_tokens', new_field_name='tgt_seq_len')
-        data_bundle.set_input('tgt_tokens', 'src_tokens', 'src_seq_len', 'tgt_seq_len', 'first','image_feature','image_tag')
-        data_bundle.set_target('tgt_tokens', 'tgt_seq_len', 'target_span', 'entities','region_label','cover_flag')
+        for name, dataset in data_bundle.iter_datasets():
+            # Apply length calculation to this dataset
+            # Ensure the fields exist before applying
+            if 'src_tokens' in dataset.field_arrays:
+                 dataset.apply_field(lambda x: len(x), field_name='src_tokens', new_field_name='src_seq_len')
+            if 'tgt_tokens' in dataset.field_arrays:
+                 dataset.apply_field(lambda x: len(x), field_name='tgt_tokens', new_field_name='tgt_seq_len')
+
+        
+        #data_bundle.set_input('tgt_tokens', 'src_tokens', 'src_seq_len', 'tgt_seq_len', 'first','image_feature','image_tag')
+        #data_bundle.set_target('tgt_tokens', 'tgt_seq_len', 'target_span', 'entities','region_label','cover_flag')
+        
         print("not_cover: %d"%(self.not_cover))
         return data_bundle
 
@@ -409,7 +427,7 @@ class TwitterNer(ConllLoader):
             entity_tags = []
             entity_spans = []
             for tag, (start, end) in spans:
-                entities.append(raw_words[start:end])
+                entities.append(raw_words[start:end+1])
                 entity_tags.append(tag.lower())
                 entity_spans.append([start, end])
 
