@@ -305,7 +305,7 @@ class BartNERPipe(Pipe):
                     'first': first,'image_tag':image_tag, 'image_feature':image_feature,'region_label':region_label,'cover_flag':cover_flag}
             return dict
 
-        data_bundle.apply_more(prepare_target, use_tqdm=False, tqdm_desc='pre. tgt.')  
+        data_bundle.apply_more(prepare_target)  
 
         data_bundle.set_ignore_type('target_span', 'entities') 
         data_bundle.set_ignore_type('image_tag')
