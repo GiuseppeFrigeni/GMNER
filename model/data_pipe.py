@@ -104,9 +104,9 @@ class BartNERPipe(Pipe):
         for tok in sorted_add_tokens:
             assert self.tokenizer.convert_tokens_to_ids([tok])[0] == self.tokenizer.unk_token_id
         #self.tokenizer.unique_no_split_tokens = unique_no_split_tokens + sorted_add_tokens
-        num_added_tokens = self.tokenizer.add_special_tokens(mapping)
+        num_added_tokens = self.tokenizer.add_special_tokens({'additional_special_tokens': sorted_add_tokens})
         print(f"num_added_tokens: {num_added_tokens}")
-        #self.tokenizer.add_tokens(sorted_add_tokens)
+        self.tokenizer.add_tokens(sorted_add_tokens)
         self.mapping2id = {}  # 给定转换后的tag，输出的是在tokenizer中的id，用来初始化表示
         self.mapping2targetid = {}  # 给定原始tag，输出对应的数字
 
