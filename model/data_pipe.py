@@ -73,7 +73,7 @@ class BartNERPipe(Pipe):
         self.region_dim=2048
         self.normalize = normalize
 
-        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer)
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer, add_prefix_space=True)
         
         assert target_type in ('word') #
 
@@ -175,7 +175,7 @@ class BartNERPipe(Pipe):
             first = []  # 用来取每个word第一个bpe
             cur_bpe_len = 1
             for word in raw_words:
-                bpes = self.tokenizer.tokenize(word, add_prefix_space=True)
+                bpes = self.tokenizer.tokenize(word)
                 bpes = self.tokenizer.convert_tokens_to_ids(bpes)
                 first.append(cur_bpe_len)
                 cur_bpe_len += len(bpes)
