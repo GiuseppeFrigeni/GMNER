@@ -199,8 +199,16 @@ class PretrainedBartModel(PreTrainedModel):
 
 def _make_linear_from_emb(emb):
     vocab_size, emb_size = emb.weight.shape
-    lin_layer = nn.Linear(vocab_size, emb_size, bias=False)
-    lin_layer.weight.data = emb.weight.data
+    # The output linear layer maps from embedding_size (hidden_dim) to vocab_size.
+    # So, in_features = emb_size, out_features = vocab_size.
+    lin_layer = nn.Linear(emb_size, vocab_size, bias=False,
+                          dtype=emb.weight.dtype,  # Ensure lin_layer has the same dtype as emb
+                          device=emb.weight.device) # Ensure lin_layer is on the same device as emb
+    
+    # The weight of nn.Linear(in_features, out_features) has shape (out_features, in_features).
+    # So, lin_layer.weight.shape is (vocab_size, emb_size).
+    # This matches emb.weight.shape, which is also (vocab_size, emb_size).
+    lin_layer.weight.data = emb.weight.data # Now shapes and dtypes should match
     return lin_layer
 
 
@@ -309,13 +317,13 @@ class BartEncoder(nn.Module):
                 config.max_position_embeddings, embed_dim, self.padding_idx
             )
         else:
+            extra_pos_embeddings_val = getattr(config, 'extra_pos_embeddings', 2)
             self.embed_positions = LearnedPositionalEmbedding(
                 config.max_position_embeddings,
                 embed_dim,
                 self.padding_idx,
-                config.extra_pos_embeddings,
+                extra_pos_embeddings_val,
             )
-        
         self.img_proj = nn.Linear(2048, config.d_model)  
 
         self.layers = nn.ModuleList([EncoderLayer(config) for _ in range(config.encoder_layers)])
@@ -500,21 +508,22 @@ class BartDecoder(nn.Module):
         super().__init__()
         self.dropout = config.dropout
         self.layerdrop = config.decoder_layerdrop
-        self.do_blenderbot_90_layernorm = config.do_blenderbot_90_layernorm  # layernorm variant
+        self.do_blenderbot_90_layernorm = getattr(config, 'do_blenderbot_90_layernorm', False) 
         self.padding_idx = embed_tokens.padding_idx
         self.max_target_positions = config.max_position_embeddings
         self.embed_scale = math.sqrt(config.d_model) if config.scale_embedding else 1.0
         self.embed_tokens = embed_tokens
-        if config.static_position_embeddings:
+        if getattr(config, 'static_position_embeddings', False):
             self.embed_positions = SinusoidalPositionalEmbedding(
                 config.max_position_embeddings, config.d_model, config.pad_token_id
             )
         else:
+            extra_pos_embeddings_val = getattr(config, 'extra_pos_embeddings', 2)
             self.embed_positions = LearnedPositionalEmbedding(
                 config.max_position_embeddings,
                 config.d_model,
                 self.padding_idx,
-                config.extra_pos_embeddings
+                extra_pos_embeddings_val,
             )
         self.layers = nn.ModuleList(
             [DecoderLayer(config) for _ in range(config.decoder_layers)]
