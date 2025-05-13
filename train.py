@@ -26,97 +26,26 @@ import datetime
 from fastNLP import Trainer
 
 from torch import optim
-from fastNLP import  SequentialSampler # BucketSampler,GradientClipCallback, cache_results, EarlyStopCallback
+#from fastNLP import  SequentialSampler, BucketSampler,GradientClipCallback, cache_results, EarlyStopCallback
+from model.sampler import SequentialSampler, BucketSampler
 
 #from model.callbacks import WarmupCallback
 #from fastNLP.core.samplers import SortedSampler
 #from fastNLP.core.sampler import  ConstTokenNumSampler
 #from model.callbacks import FitlogCallback
 
-from fastNLP import DataSet
+from model.dataset import DataSet
+from model.batch import DataSetIter
 from tqdm import tqdm, trange
+from model.utils import _move_dict_value_to_device
 #from fastNLP.core.utils import _move_dict_value_to_device
 #import random
 
 fitlog.debug()
 fitlog.set_log_dir('logs')
 
-class BaseSampler(object):
-    """The base class of all samplers.
 
-        Sub-classes must implement the ``__call__`` method.
-        ``__call__`` takes a DataSet object and returns a list of int - the sampling indices.
-    """
 
-    def __call__(self, *args, **kwargs):
-        raise NotImplementedError
-    
-
-class BucketSampler(BaseSampler):
-    """
-
-        :param int num_buckets: the number of buckets to use.
-        :param int batch_size: batch size per epoch.
-        :param str seq_lens_field_name: the field name indicating the field about sequence length.
-
-    """
-    def __init__(self, num_buckets=10, batch_size=32, seq_lens_field_name='seq_lens'):
-        self.num_buckets = num_buckets
-        self.batch_size = batch_size
-        self.seq_lens_field_name = seq_lens_field_name
-
-    def __call__(self, data_set):
-
-        seq_lens = data_set.get_all_fields()[self.seq_lens_field_name].content
-        total_sample_num = len(seq_lens)
-
-        bucket_indexes = []
-        num_sample_per_bucket = total_sample_num // self.num_buckets
-        for i in range(self.num_buckets):
-            bucket_indexes.append([num_sample_per_bucket * i, num_sample_per_bucket * (i + 1)])
-        bucket_indexes[-1][1] = total_sample_num
-
-        sorted_seq_lens = list(sorted([(idx, seq_len) for
-                                       idx, seq_len in zip(range(total_sample_num), seq_lens)],
-                                      key=lambda x: x[1]))
-
-        batchs = []
-
-        left_init_indexes = []
-        for b_idx in range(self.num_buckets):
-            start_idx = bucket_indexes[b_idx][0]
-            end_idx = bucket_indexes[b_idx][1]
-            sorted_bucket_seq_lens = sorted_seq_lens[start_idx:end_idx]
-            left_init_indexes.extend([tup[0] for tup in sorted_bucket_seq_lens])
-            num_batch_per_bucket = len(left_init_indexes) // self.batch_size
-            np.random.shuffle(left_init_indexes)
-            for i in range(num_batch_per_bucket):
-                batchs.append(left_init_indexes[i * self.batch_size:(i + 1) * self.batch_size])
-            left_init_indexes = left_init_indexes[num_batch_per_bucket * self.batch_size:]
-        if (left_init_indexes) != 0:
-            batchs.append(left_init_indexes)
-        np.random.shuffle(batchs)
-
-        return list(chain(*batchs))
-
-def _move_dict_value_to_device(*args, device: torch.device):
-    """
-
-    move data to model's device, element in *args should be dict. This is a inplace change.
-    :param device: torch.device
-    :param args:
-    :return:
-    """
-    if not isinstance(device, torch.device):
-        raise TypeError(f"device must be `torch.device`, got `{type(device)}`")
-
-    for arg in args:
-        if isinstance(arg, dict):
-            for key, value in arg.items():
-                if isinstance(value, torch.Tensor):
-                    arg[key] = value.to(device)
-        else:
-            raise TypeError("Only support `dict` type right now.")
 
 
 import argparse
@@ -241,9 +170,14 @@ model.to(device)
 
 def Training(args, train_idx, train_data, model, device, optimizer):
     
-    train_sampler = BucketSampler(seq_len_field_name='src_seq_len',batch_size=args.batch_size)   # 带Bucket的 Random Sampler. 可以随机地取出长度相似的元素
-    train_data_iterator = DataSet._inner_iter(train_data, batch_size=args.batch_size, sampler=train_sampler)
-    
+    #train_sampler = BucketSampler(seq_len_field_name='src_seq_len',batch_size=args.batch_size)   # 带Bucket的 Random Sampler. 可以随机地取出长度相似的元素
+    #train_data_iterator = DataSetIter(train_data, batch_size=args.batch_size, sampler=train_sampler)
+    train_data_iterator = torch.utils.data.DataLoader(dataset=train_data, batch_size=args.batch_size, shuffle=True)
+
+    for x in train_data_iterator:
+        print(x)
+        break
+
     train_loss = 0.
     train_region_loss = 0.
     # for batch_x, batch_y in tqdm(train_data_iterator, total=len(train_data_iterator)):
@@ -277,7 +211,7 @@ def Training(args, train_idx, train_data, model, device, optimizer):
     return train_loss, train_region_loss
 
 def Inference(args,eval_data, model, device, metric):
-    data_iterator = DataSet._inner_iter(eval_data, batch_size=args.batch_size * 2, sampler=SequentialSampler())
+    data_iterator = DataSetIter(eval_data, batch_size=args.batch_size * 2, sampler=SequentialSampler())
     # for batch_x, batch_y in tqdm(data_iterator, total=len(data_iterator)):
     for batch_x, batch_y in (data_iterator):
         _move_dict_value_to_device(batch_x, batch_y, device=device)
@@ -301,7 +235,7 @@ def Inference(args,eval_data, model, device, metric):
 
 
 def Predict(args,eval_data, model, device, metric,tokenizer,ids2label):
-    data_iterator = DataSet._inner_iter(eval_data, batch_size=args.batch_size * 2, sampler=SequentialSampler())
+    data_iterator = DataSetIter(eval_data, batch_size=args.batch_size * 2, sampler=SequentialSampler())
     # for batch_x, batch_y in tqdm(data_iterator, total=len(data_iterator)):
     with open (args.pred_output_file,'w') as fw:
         for batch_x, batch_y in (data_iterator):

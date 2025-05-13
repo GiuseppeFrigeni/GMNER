@@ -493,13 +493,32 @@ class BartSeq2SeqModel(Seq2SeqModel):
                     use_encoder_mlp=False,box_num = 36):
         model = BartModel.from_pretrained(bart_model)
         num_tokens, _ = model.encoder.embed_tokens.weight.shape
-        model.resize_token_embeddings(len(tokenizer.unique_no_split_tokens)+num_tokens)   # 扩充vocab
+
+        # --- MODIFICATION START ---
+        # Attempt to get the list of "unique_no_split_tokens" from the tokenizer's
+        # standard attributes for added tokens.
+        _list_of_added_token_strings = []
+        if hasattr(tokenizer, 'added_tokens_encoder') and tokenizer.added_tokens_encoder:
+            _list_of_added_token_strings = list(tokenizer.added_tokens_encoder.keys())
+        # Fallback for some tokenizer versions/types if added_tokens_encoder is not populated but get_added_vocab is
+        elif hasattr(tokenizer, 'get_added_vocab') and tokenizer.get_added_vocab():
+            _list_of_added_token_strings = list(tokenizer.get_added_vocab().keys())
+        
+        if not _list_of_added_token_strings:
+            print("Warning: No added tokens found via tokenizer.added_tokens_encoder or get_added_vocab(). "
+                  "If 'unique_no_split_tokens' were expected, their embeddings won't be specially initialized.")
+        # --- MODIFICATION END ---
+
+        # Resize token embeddings to accommodate the original tokens + new tokens
+        # The `model.resize_token_embeddings` method handles the actual embedding matrix resizing.
+        model.resize_token_embeddings(len(_list_of_added_token_strings) + num_tokens)
+
         encoder = model.encoder
         decoder = model.decoder
 
         # 将类别（eg: "<<person>>"）添加到decoder原本词表之前，embed使用“类别名”的embed
         _tokenizer = BartTokenizer.from_pretrained(bart_model)   
-        for token in tokenizer.unique_no_split_tokens:
+        for token in _list_of_added_token_strings:
             if token[:2] == '<<':  # 特殊字符
                 index = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(token))
                 if len(index)>1:

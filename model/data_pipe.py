@@ -1,7 +1,7 @@
 from fastNLP.io import ConllLoader, Loader
 from fastNLP.io.loader.conll import _read_conll
 from fastNLP.io.pipe.utils import iob2, iob2bioes
-from fastNLP import DataSet, Instance
+from fastNLP import  Instance
 from fastNLP.io import Pipe
 from transformers import AutoTokenizer
 #from fastNLP.core.metrics import bio_tag_to_spans
@@ -16,6 +16,9 @@ from tqdm import tqdm
 import os
 import torch
 import torchvision
+
+from .dataset import DataSet
+
 
 def bio_tag_to_spans(tags, ignore_labels=None):
     """
