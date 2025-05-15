@@ -243,10 +243,12 @@ class FBartEncoder(Seq2SeqEncoder):
         mask = seq_len_to_mask(src_seq_len, max_len=src_tokens.size(1))
         image_mask = mask_iamge(image_feature)    
 
-        img_feat_, dict = self.bart_encoder(input_ids=src_tokens, image_feature=image_feature, attention_mask=mask, image_mask = image_mask, return_dict=True,
+        img_feat_, dict_encoder_output = self.bart_encoder(input_ids=src_tokens, image_feature=image_feature, attention_mask=mask, image_mask = image_mask, return_dict=True,
                                  output_hidden_states=True)  # last_hidden_state: tensor(bsz, max_len, 768),  hidden_states: tuple((baz, max_len, 768)),  attentions
-        encoder_outputs = dict.last_hidden_state
-        hidden_states = dict.hidden_states
+        encoder_outputs = dict_encoder_output.last_hidden_state
+        if torch.isnan(encoder_outputs).any() or torch.isinf(encoder_outputs).any():
+            print(f"DEBUG FBartEncoder: encoder_outputs (dict.last_hidden_state) CONTAINS NaN/Inf!")
+        hidden_states = dict_encoder_output.hidden_states
         multi_modal_mask = torch.cat((image_mask,mask),dim=-1)
         return img_feat_, encoder_outputs, multi_modal_mask, hidden_states
 
@@ -302,7 +304,7 @@ class FBartDecoder(Seq2SeqDecoder):
         if self.training:
             tokens = tokens[:, :-1]
             decoder_pad_mask = tokens.eq(self.pad_token_id)  # decoder需要让pad位置为1
-            dict = self.decoder(input_ids=tokens,
+            dict_decoder_output = self.decoder(input_ids=tokens,
                                 encoder_hidden_states=encoder_outputs,
                                 encoder_padding_mask=encoder_pad_mask,
                                 decoder_padding_mask=decoder_pad_mask,
@@ -310,7 +312,7 @@ class FBartDecoder(Seq2SeqDecoder):
                                 return_dict=True)
         else:
             past_key_values = state.past_key_values
-            dict = self.decoder(input_ids=tokens,
+            dict_decoder_output = self.decoder(input_ids=tokens,
                                 encoder_hidden_states=encoder_outputs,
                                 encoder_padding_mask=encoder_pad_mask,
                                 decoder_padding_mask=None,
@@ -318,10 +320,11 @@ class FBartDecoder(Seq2SeqDecoder):
                                 past_key_values=past_key_values,
                                 use_cache=True,
                                 return_dict=True)
-        hidden_state = dict.last_hidden_state  # bsz x max_len x hidden_size
+        hidden_state = dict_decoder_output.last_hidden_state  # bsz x max_len x hidden_size
+
         ## 比CaGFBartDecoder 少一个dropout
         if not self.training:
-            state.past_key_values = dict.past_key_values
+            state.past_key_values = dict_decoder_output.past_key_values
 
         logits = hidden_state.new_full((hidden_state.size(0), hidden_state.size(1), self.src_start_index+src_tokens.size(-1)),
                                        fill_value=-1e24)
@@ -404,7 +407,7 @@ class CaGFBartDecoder(FBartDecoder):
             tokens = tokens[:, :-1]  
             decoder_pad_mask = tokens.eq(self.pad_token_id)  # decoder需要让pad位置为1   
             
-            dict = self.decoder(input_ids=tokens,
+            dict_decoder_output = self.decoder(input_ids=tokens,
                                 encoder_hidden_states=encoder_outputs,  # (bsz, max_len, 768)
                                 encoder_padding_mask=encoder_pad_mask,  
                                 decoder_padding_mask=decoder_pad_mask,  # (bsz, max_target-1)
@@ -413,7 +416,7 @@ class CaGFBartDecoder(FBartDecoder):
         else:
             past_key_values = state.past_key_values
             try:
-                dict = self.decoder(input_ids=tokens,
+                dict_decoder_output = self.decoder(input_ids=tokens,
                                     encoder_hidden_states=encoder_outputs,
                                     encoder_padding_mask=encoder_pad_mask,
                                     decoder_padding_mask=None,
@@ -423,40 +426,67 @@ class CaGFBartDecoder(FBartDecoder):
                                     return_dict=True)
             except:
                 import pdb;pdb.set_trace()
-        hidden_state = dict.last_hidden_state  # bsz x target_len x hidden_size
+        hidden_state = dict_decoder_output.last_hidden_state  # bsz x target_len x hidden_size
+        print(f"CaGF_DEBUG: hidden_state BEFORE dropout: min={hidden_state.min().item():.4f}, max={hidden_state.max().item():.4f}, hasNaN={torch.isnan(hidden_state).any()}")
         hidden_state = self.dropout_layer(hidden_state)
+        print(f"CaGF_DEBUG: hidden_state AFTER dropout: min={hidden_state.min().item():.4f}, max={hidden_state.max().item():.4f}, hasNaN={torch.isnan(hidden_state).any()}")
         if not self.training:
-            state.past_key_values = dict.past_key_values
+            state.past_key_values = dict_decoder_output.past_key_values
 
         logits = hidden_state.new_full((hidden_state.size(0), hidden_state.size(1), self.src_start_index+src_tokens.size(-1)), fill_value=-1e24)   # (nsz, max_target， 54 + max_len)
         
         
-        eos_scores = F.linear(hidden_state, self.dropout_layer(self.decoder.embed_tokens.weight[2:3]))  # (bsz, max_target, 768) x (768 ,1) -> (bsz, max_target, 1)
-        tag_scores = F.linear(hidden_state, self.dropout_layer(self.decoder.embed_tokens.weight[self.label_start_id:self.label_end_id]))  # bsz x max_len x num_class                                                                 
-        
+        # --- Score Calculations ---
+        embed_tokens_weight_for_eos = self.decoder.embed_tokens.weight[2:3]
+        embed_tokens_weight_for_tags = self.decoder.embed_tokens.weight[self.label_start_id:self.label_end_id]
 
+        print(f"CaGF_DEBUG: embed_tokens_weight_for_eos min={embed_tokens_weight_for_eos.min().item():.4f}, max={embed_tokens_weight_for_eos.max().item():.4f}")
+        print(f"CaGF_DEBUG: embed_tokens_weight_for_tags min={embed_tokens_weight_for_tags.min().item():.4f}, max={embed_tokens_weight_for_tags.max().item():.4f}")
+
+        eos_scores = F.linear(hidden_state, self.dropout_layer(embed_tokens_weight_for_eos))
+        tag_scores = F.linear(hidden_state, self.dropout_layer(embed_tokens_weight_for_tags))
+        
+        print(f"CaGF_DEBUG: eos_scores min={eos_scores.min().item():.4f}, max={eos_scores.max().item():.4f}, hasNaN={torch.isnan(eos_scores).any()}")
+        print(f"CaGF_DEBUG: tag_scores min={tag_scores.min().item():.4f}, max={tag_scores.max().item():.4f}, hasNaN={torch.isnan(tag_scores).any()}")
        
         src_outputs = state.encoder_output[:,self.box_num:,:]  
         src_img_outputs = state.encoder_output[:,:self.box_num,:]
 
         if hasattr(self, 'encoder_mlp'):
+            src_outputs_before_mlp = src_outputs
+            src_img_outputs_before_mlp = src_img_outputs
             src_outputs = self.encoder_mlp(src_outputs)
             src_img_outputs = self.encoder_mlp(src_img_outputs)
-
+            print(f"CaGF_DEBUG: src_outputs (text) BEFORE encoder_mlp: min={src_outputs_before_mlp.min().item():.4f}, max={src_outputs_before_mlp.max().item():.4f}")
+            print(f"CaGF_DEBUG: src_outputs (text) AFTER encoder_mlp: min={src_outputs.min().item():.4f}, max={src_outputs.max().item():.4f}, hasNaN={torch.isnan(src_outputs).any()}")
+            print(f"CaGF_DEBUG: src_img_outputs BEFORE encoder_mlp: min={src_img_outputs_before_mlp.min().item():.4f}, max={src_img_outputs_before_mlp.max().item():.4f}")
+            print(f"CaGF_DEBUG: src_img_outputs AFTER encoder_mlp: min={src_img_outputs.min().item():.4f}, max={src_img_outputs.max().item():.4f}, hasNaN={torch.isnan(src_img_outputs).any()}")
+            
         if first is not None:
             mask = first.eq(0)  # bsz x 1 x max_word_len 
             src_outputs = src_outputs.gather(index=first.unsqueeze(2).repeat(1, 1, src_outputs.size(-1)), dim=1) # (bsz, max_len, 768)  # 取sentence内的encoder_output
         else:
-            print("CaGFBartDecoder: first is None !")
-            import pdb;pdb.set_trace()
+            print("CaGFBartDecoder WARNING: 'first' is None! Masking logic might be incorrect.")
+            mask = torch.zeros_like(src_tokens, dtype=torch.bool, device=src_tokens.device)
+
         mask = mask.unsqueeze(1)
 
         input_embed = self.dropout_layer(self.decoder.embed_tokens(src_tokens))  # bsz x max_word_len x hidden_size
         input_img_embed = self.dropout_layer(img_feat_)  # bsz, box_num, hidden_size
+        print(f"CaGF_DEBUG: src_outputs (text, gathered) min={src_outputs.min().item():.4f}, max={src_outputs.max().item():.4f}, hasNaN={torch.isnan(src_outputs).any()}")
+        print(f"CaGF_DEBUG: input_embed (text) min={input_embed.min().item():.4f}, max={input_embed.max().item():.4f}, hasNaN={torch.isnan(input_embed).any()}")
+        print(f"CaGF_DEBUG: src_img_outputs min={src_img_outputs.min().item():.4f}, max={src_img_outputs.max().item():.4f}, hasNaN={torch.isnan(src_img_outputs).any()}")
+        print(f"CaGF_DEBUG: input_img_embed min={input_img_embed.min().item():.4f}, max={input_img_embed.max().item():.4f}, hasNaN={torch.isnan(input_img_embed).any()}")
+
+        word_scores_einsum_inputs_hs = hidden_state
+        word_scores_einsum_inputs_so = src_outputs 
+        img_scores_einsum_inputs_sio = src_img_outputs 
+
 
         if self.avg_feature:  # 先把feature合并一下
             src_outputs = (src_outputs + input_embed)/2   
             src_img_outputs = (src_img_outputs + input_img_embed) /2
+
         word_scores = torch.einsum('blh,bnh->bln', hidden_state, src_outputs) 
         img_scores = torch.einsum('blh,bnh->bln', hidden_state, src_img_outputs)
         if not self.avg_feature:

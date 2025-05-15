@@ -11,6 +11,7 @@ warnings.filterwarnings('ignore')
 
 import numpy as np
 import torch
+from torch.nn.utils.rnn import pad_sequence # Make sure this is imported
 from itertools import chain
 
 
@@ -42,6 +43,10 @@ from model.utils import _move_dict_value_to_device
 #import random
 
 fitlog.debug()
+
+# Enable anomaly detection to find the operation that causes NaNs
+#torch.autograd.set_detect_anomaly(True)
+
 fitlog.set_log_dir('logs')
 
 
@@ -168,62 +173,281 @@ print(train_dataset[:3])
 device = torch.device(device)
 model.to(device)
 
+
+def create_collate_fn(tensor_fields_map, padding_values_map):
+    """
+    Creates a custom collate function for a batch of Instance objects.
+    - Fields specified as keys in `tensor_fields_map` will be converted to tensors.
+    - If these tensorized fields are sequences of varying lengths, they will be padded
+      using values from `padding_values_map`.
+    - Other fields will be returned as lists.
+
+    Args:
+        tensor_fields_map (dict): A dictionary where keys are field names
+                                  from the Instance objects that should be
+                                  converted to tensors.
+                                  Example: {'input_ids': True, 'labels': True}
+        padding_values_map (dict): A dictionary mapping field names to their
+                                   respective padding values. This is used for
+                                   fields that are tensorized and found to be
+                                   variable-length sequences.
+                                   Example: {'input_ids': 0, 'labels': -100}
+    Returns:
+        function: The collate function.
+    """
+    if not isinstance(padding_values_map, dict):
+        raise ValueError("padding_values_map must be a dictionary.")
+
+    def collate_fn(batch):
+        if not batch:
+            return {}
+
+        first_instance_fields = batch[0].fields # Assuming consistent field names
+        collated_batch = {}
+
+        for field_name in first_instance_fields.keys():
+            values_for_field = [instance[field_name] for instance in batch]
+
+            if field_name in tensor_fields_map:
+                try:
+                    # Convert all items for this field to tensors
+                    tensor_items = [torch.as_tensor(item) for item in values_for_field]
+
+                    # Check if items need padding or can be simply stacked
+                    if not tensor_items: # Should not happen if batch is not empty
+                        collated_batch[field_name] = torch.empty(0)
+                        continue
+
+                    first_item_ndim = tensor_items[0].ndim
+                    
+                    if first_item_ndim == 0: # All items are scalar tensors
+                        collated_batch[field_name] = torch.stack(tensor_items)
+                    else: # Items are non-scalar (sequences or multi-dimensional)
+                        # Check if all tensors have the exact same shape
+                        is_same_shape = True
+                        first_shape = tensor_items[0].shape
+                        for t in tensor_items[1:]:
+                            if t.shape != first_shape:
+                                is_same_shape = False
+                                break
+                        
+                        if is_same_shape:
+                            # All tensors have the same shape, stack them
+                            collated_batch[field_name] = torch.stack(tensor_items)
+                        else:
+                            # Shapes differ, requires padding.
+                            # This typically applies to sequences (1D tensors of varying lengths)
+                            # or lists of multi-D tensors where the first dimension varies (e.g. region_label)
+                            padding_value = padding_values_map.get(field_name)
+                            if padding_value is None:
+                                print(f"Warning: No padding value specified in padding_values_map for variable-length field '{field_name}'. Defaulting to 0.")
+                                padding_value = 0
+                            
+                            collated_batch[field_name] = pad_sequence(
+                                tensor_items, batch_first=True, padding_value=float(padding_value) # pad_sequence expects float for padding_value
+                            )
+                except Exception as e:
+                    print(f"Error collating field '{field_name}': {e}. Returning as list.")
+                    collated_batch[field_name] = values_for_field # Fallback to list
+            else:
+                # Field not in tensor_fields_map, return as a list
+                collated_batch[field_name] = values_for_field
+        
+        return collated_batch
+
+    return collate_fn
+
+
+fields_tensors = ['src_tokens', 'image_feature', 'tgt_tokens', 'src_seq_len', 'tgt_seq_len', 'first', 'region_label']
+
+padding_values = {
+    'src_tokens': tokenizer.pad_token_id,
+    'tgt_tokens': tokenizer.pad_token_id, # Or eos_token_id if your model specifically uses that for padding targets
+    'first': 0,                          # Assuming 0 is a safe padding for this field
+    'region_label': -100,                # Assuming -100 for ignored labels, adjust if necessary
+    # 'image_feature' is pre-padded in BartNERPipe, so it won't hit the pad_sequence path.
+    # 'src_seq_len', 'tgt_seq_len' are scalars, they will be stacked.
+}
+
+collate_fn = create_collate_fn(
+    tensor_fields_map=fields_tensors,
+    padding_values_map=padding_values
+)
+
+
+
 def Training(args, train_idx, train_data, model, device, optimizer):
     
     #train_sampler = BucketSampler(seq_len_field_name='src_seq_len',batch_size=args.batch_size)   # 带Bucket的 Random Sampler. 可以随机地取出长度相似的元素
     #train_data_iterator = DataSetIter(train_data, batch_size=args.batch_size, sampler=train_sampler)
-    train_data_iterator = torch.utils.data.DataLoader(dataset=train_data, batch_size=args.batch_size, shuffle=True)
+    train_data_iterator = torch.utils.data.DataLoader( 
+        dataset=train_data, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
 
-    for x in train_data_iterator:
-        print(x)
-        break
 
     train_loss = 0.
     train_region_loss = 0.
+
     # for batch_x, batch_y in tqdm(train_data_iterator, total=len(train_data_iterator)):
-    for batch_x, batch_y in (train_data_iterator):
-        _move_dict_value_to_device(batch_x, batch_y, device=device)
+    for batch_idx, batch_x in enumerate(tqdm(train_data_iterator, desc=f"Epoch {train_idx} Training")):
+        _move_dict_value_to_device(batch_x, device=device)
         src_tokens = batch_x['src_tokens']
         image_feature = batch_x['image_feature']
+
+        img_ids_for_debug = batch_x.get('img_id', ['N/A'])[:5]
+        # --- Enhanced Debugging: Input Checks ---
+        if torch.isnan(batch_x['image_feature']).any() or torch.isinf(batch_x['image_feature']).any():
+            print(f"CRITICAL WARNING: image_feature contains NaN/Inf at epoch {train_idx}, batch_ids (first 5): {batch_x.get('img_id', ['N/A'])[:5]}")
+        # src_tokens are indices, less likely to be NaN unless data loading is corrupt
+        # if torch.isnan(batch_x['src_tokens']).any() or torch.isinf(batch_x['src_tokens']).any():
+        #     print(f"CRITICAL WARNING: src_tokens contains NaN/Inf at epoch {train_idx}, batch_ids (first 5): {batch_x.get('img_id', ['N/A'])[:5]}")
+
+
         tgt_tokens = batch_x['tgt_tokens']
         src_seq_len = batch_x['src_seq_len']
         tgt_seq_len = batch_x['tgt_seq_len']
         first = batch_x['first']
-        region_label = batch_y['region_label']
+        region_label = batch_x['region_label']
 
+        # In Training function, input checks section:
+        if 'tgt_tokens' in batch_x and batch_x['tgt_tokens'].shape[1] < 2:
+            print(f"CRITICAL WARNING (Epoch {train_idx}, Batch {batch_idx}): Padded target token sequence length is {batch_x['tgt_tokens'].shape[1]} (< 2). Img IDs (first 5): {img_ids_for_debug}")
+
+        # Check original target sequence lengths (should be >= 2 for [BOS, EOS] minimum)
+        if hasattr(batch_x['tgt_seq_len'], "min") and batch_x['tgt_seq_len'].min().item() < 2:
+            problematic_ids = []
+            if 'img_id' in batch_x:
+                for i, length in enumerate(batch_x['tgt_seq_len'].tolist()):
+                    if length < 2:
+                        problematic_ids.append(batch_x['img_id'][i])
+            print(f"CRITICAL WARNING: Minimum original target sequence length (tgt_seq_len) is {batch_x['tgt_seq_len'].min().item()} at epoch {train_idx}. Problematic img_ids (if any): {problematic_ids[:5]}")
+            # This can lead to issues in get_loss if tgt_tokens[:, 1:] becomes empty.
+        # --- End Enhanced Debugging ---
 
         results = model(src_tokens,image_feature, tgt_tokens, src_seq_len=src_seq_len, tgt_seq_len=tgt_seq_len, first=first)
-        pred, region_pred = results['pred'],results['region_pred']   ## logits:(bsz,tgt_len,class+max_len)  region_logits:(??,8)
-        
+        pred_raw, region_pred_raw = results['pred'],results['region_pred']       
+
+         
+        # --- Enhanced Debugging: Model Output Checks (BEFORE CLAMPING) ---
+        if torch.isnan(pred_raw).any() or torch.isinf(pred_raw).any():
+            print(f"CRITICAL WARNING (Epoch {train_idx}, Batch {batch_idx}): model output 'pred_raw' (before clamp) contains NaN/Inf. Img IDs (first 5): {img_ids_for_debug}")
+        if region_pred_raw is not None:
+            if torch.isnan(region_pred_raw).any() or torch.isinf(region_pred_raw).any():
+                print(f"CRITICAL WARNING (Epoch {train_idx}, Batch {batch_idx}): model output 'region_pred_raw' (before clamp) contains NaN/Inf. Img IDs (first 5): {img_ids_for_debug}")
+        # --- End Enhanced Debugging ---
+
+        #pred = torch.clamp(pred_raw, min=-30, max=30)
+        pred = pred_raw
+        if region_pred_raw is not None:
+            #region_pred = torch.clamp(region_pred_raw, min=-30, max=30)
+            region_pred = region_pred_raw
+        else:
+            region_pred = None
+
+        print(f"TRAIN.PY : pred_raw (model output before clamp) min={pred_raw.min()}, max={pred_raw.max()}, hasNaN={torch.isnan(pred_raw).any()}")
+        print(f"TRAIN.PY : pred (clamped, input to get_loss) min={pred.min()}, max={pred.max()}, hasNaN={torch.isnan(pred).any()}")
+
         loss, region_loss = get_loss(tgt_tokens, tgt_seq_len, pred, region_pred,region_label,use_kl=args.use_kl)
         
-        train_loss += loss.item()
-        train_region_loss += region_loss.item()
+
+        train_loss += loss.item() if not torch.isnan(loss) else 0 # Avoid propagating NaN to sum
+        train_region_loss += region_loss.item() if not torch.isnan(region_loss) else 0
+        
+        # Accumulate loss, handling potential NaNs from get_loss
+        batch_actual_loss = 0.0
+        if not torch.isnan(loss):
+            train_loss += loss.item()
+            batch_actual_loss += loss # Keep as tensor for all_loss
+        else:
+            print(f"WARNING (Epoch {train_idx}, Batch {batch_idx}): 'loss' from get_loss is NaN. Img IDs (first 5): {img_ids_for_debug}")
+
+        batch_actual_region_loss = 0.0 # Will be tensor or float
+        if region_loss is not None and not torch.isnan(region_loss):
+            train_region_loss += region_loss.item()
+            batch_actual_region_loss = region_loss # Keep as tensor
+        elif region_loss is not None and torch.isnan(region_loss):
+            print(f"WARNING (Epoch {train_idx}, Batch {batch_idx}): 'region_loss_val' from get_loss is NaN. Img IDs (first 5): {img_ids_for_debug}")
+
+        # Construct all_loss more carefully
+        if isinstance(batch_actual_loss, torch.Tensor) and isinstance(batch_actual_region_loss, torch.Tensor):
+            all_loss = batch_actual_loss + args.region_loss_ratio * batch_actual_region_loss
+        elif isinstance(batch_actual_loss, torch.Tensor): # region_loss was None or NaN
+            all_loss = batch_actual_loss
+        elif isinstance(batch_actual_region_loss, torch.Tensor): # main loss was NaN
+            all_loss = args.region_loss_ratio * batch_actual_region_loss
+        else: # Both losses were problematic (NaN or main loss NaN and region_loss None)
+            print(f"WARNING (Epoch {train_idx}, Batch {batch_idx}): Both components of loss are problematic. Skipping backward for this batch. Img IDs: {img_ids_for_debug}")
+            optimizer.zero_grad()
+            continue
+        
+        # Safeguard check for all_loss being NaN before backward
+        if torch.isnan(all_loss):
+            print(f"CRITICAL WARNING (Epoch {train_idx}, Batch {batch_idx}): Total loss 'all_loss' is NaN BEFORE backward. Skipping backward. Img IDs: {img_ids_for_debug}")
+            optimizer.zero_grad() 
+            continue
 
         all_loss = loss + args.region_loss_ratio * region_loss
+
+        
+        print(f"--- BATCH {batch_idx} ---")
+        print(f"Loss: {loss.item()}, Region Loss: {region_loss.item()}, All Loss: {all_loss.item()}")
     
+        shared_embedding_layer = model.seq2seq_model.encoder.bart_encoder.embed_tokens # Get the nn.Embedding layer
+        if shared_embedding_layer is not None:
+            old_embed_weights_sum = shared_embedding_layer.weight.detach().sum()
+            print(f"DEBUG BATCH {batch_idx}: Sum of embed_tokens.weight BEFORE backward: {old_embed_weights_sum}")
+
+
+        optimizer.zero_grad() # Ensure grads are clear before backward
         all_loss.backward()
-        optimizer.step()
-        optimizer.zero_grad()
+    
+        print(f"--- AFTER BACKWARD for BATCH {batch_idx} ---")
+        nan_in_grad = False
+        for name, param in model.named_parameters():
+            if param.grad is not None:
+                if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
+                    print(f"NaN/Inf in gradient of: {name} for batch {batch_idx}")
+                    nan_in_grad = True
+        # else:
+        #     print(f"Gradient for {name} is None") # Can be noisy
+        if not nan_in_grad:
+            print(f"No NaN/Inf gradients detected for batch {batch_idx} immediately after backward.")
+
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        optimizer.step() # This step would corrupt weights if grads were NaN
+
+        if shared_embedding_layer is not None:
+            new_embed_weights_sum = shared_embedding_layer.weight.detach().sum()
+            print(f"DEBUG BATCH {batch_idx}: Sum of embed_tokens.weight AFTER optimizer.step: {new_embed_weights_sum}")
+            if torch.isnan(shared_embedding_layer.weight).any():
+                print(f"CRITICAL BATCH {batch_idx}: embed_tokens.weight IS NOW NaN AFTER optimizer.step for batch {batch_idx}!")
+
+
+        if torch.isnan(loss) or torch.isinf(loss):
+            raise ValueError(f"train_loss is NaN/Inf after epoch {train_idx}.")
 
     print("train_loss: %f"%(train_loss))
     print("train_region_loss: %f"%(train_region_loss))
     return train_loss, train_region_loss
 
+
 def Inference(args,eval_data, model, device, metric):
-    data_iterator = DataSetIter(eval_data, batch_size=args.batch_size * 2, sampler=SequentialSampler())
+    #data_iterator = DataSetIter(eval_data, batch_size=args.batch_size * 2, sampler=SequentialSampler())
     # for batch_x, batch_y in tqdm(data_iterator, total=len(data_iterator)):
-    for batch_x, batch_y in (data_iterator):
-        _move_dict_value_to_device(batch_x, batch_y, device=device)
+    data_iterator = torch.utils.data.DataLoader(
+        dataset=eval_data, batch_size=args.batch_size * 2, shuffle=False, collate_fn=collate_fn)
+    
+    for batch_x in tqdm(data_iterator,desc=f"Inference"):
+
+        _move_dict_value_to_device(batch_x, device=device)
         src_tokens = batch_x['src_tokens']
         image_feature = batch_x['image_feature']
         tgt_tokens = batch_x['tgt_tokens']
         src_seq_len = batch_x['src_seq_len']
         tgt_seq_len = batch_x['tgt_seq_len']
         first = batch_x['first']
-        region_label = batch_y['region_label']
-        target_span = batch_y['target_span']
-        cover_flag = batch_y['cover_flag']
+        region_label = batch_x['region_label']
+        target_span = batch_x['target_span']
+        cover_flag = batch_x['cover_flag']
 
         results = model.predict(src_tokens,image_feature, src_seq_len=src_seq_len, first=first)
         
@@ -234,21 +458,26 @@ def Inference(args,eval_data, model, device, metric):
     return res
 
 
+
+
 def Predict(args,eval_data, model, device, metric,tokenizer,ids2label):
-    data_iterator = DataSetIter(eval_data, batch_size=args.batch_size * 2, sampler=SequentialSampler())
+    #data_iterator = DataSetIter(eval_data, batch_size=args.batch_size * 2, sampler=SequentialSampler())
     # for batch_x, batch_y in tqdm(data_iterator, total=len(data_iterator)):
+    data_iterator = torch.utils.data.DataLoader(
+        dataset=eval_data, batch_size=args.batch_size * 2, shuffle=False, collate_fn=collate_fn)
+
     with open (args.pred_output_file,'w') as fw:
-        for batch_x, batch_y in (data_iterator):
-            _move_dict_value_to_device(batch_x, batch_y, device=device)
+        for batch_x in tqdm(data_iterator,desc=f"Predict"):
+            _move_dict_value_to_device(batch_x, device=device)
             src_tokens = batch_x['src_tokens']
             image_feature = batch_x['image_feature']
             tgt_tokens = batch_x['tgt_tokens']
             src_seq_len = batch_x['src_seq_len']
             tgt_seq_len = batch_x['tgt_seq_len']
             first = batch_x['first']
-            region_label = batch_y['region_label']
-            target_span = batch_y['target_span']
-            cover_flag = batch_y['cover_flag']
+            region_label = batch_x['region_label']
+            target_span = batch_x['target_span']
+            cover_flag = batch_x['cover_flag']
 
             results = model.predict(src_tokens,image_feature, src_seq_len=src_seq_len, first=first)
             
@@ -256,7 +485,7 @@ def Predict(args,eval_data, model, device, metric,tokenizer,ids2label):
             
             pred_pairs, target_pairs = metric.evaluate(target_span, pred, tgt_tokens, region_pred,region_label,cover_flag,predict_mode=True)
             
-            raw_words = batch_y['raw_words']
+            raw_words = batch_x['raw_words']
             word_start_index = 8 ## 2 + 2 +4
             assert len(pred_pairs) == len(target_pairs)
             for i in range(len(pred_pairs)):

@@ -354,20 +354,37 @@ class BartEncoder(nn.Module):
         # check attention mask and invert
         if attention_mask is not None:
             attention_mask = invert_mask(attention_mask)
-
+        if torch.isnan(self.embed_tokens.weight).any():
+            print("CRITICAL DEBUG BartEncoder FWD: self.embed_tokens.weight CONTAINS NaN!")
+        print(f"DEBUG BartEncoder FWD: input_ids min: {input_ids.min()}, max: {input_ids.max()}, shape: {input_ids.shape}")
+        print(f"DEBUG BartEncoder FWD: Vocab size (embed_tokens.num_embeddings): {self.embed_tokens.num_embeddings}")
         inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale
+        if torch.isnan(inputs_embeds).any(): print("DEBUG BartEncoder FWD: inputs_embeds has NaN!")
+
         embed_pos = self.embed_positions(input_ids)
+        if torch.isnan(embed_pos).any(): print("DEBUG BartEncoder FWD: embed_pos has NaN!")
+
         x = inputs_embeds + embed_pos
+        if torch.isnan(x).any(): print("DEBUG BartEncoder FWD: x after (inputs_embeds + embed_pos) has NaN!")
+
+
         x = self.layernorm_embedding(x)
+        if torch.isnan(x).any(): print("DEBUG BartEncoder FWD: x after layernorm_embedding has NaN!")
+
+
         x = F.dropout(x, p=self.dropout, training=self.training)
 
         
         ############## 拼接图像 添加掩码
         # import pdb;pdb.set_trace()
-        img_feat_ = self.img_proj(image_feature)
+        img_feat_raw = self.img_proj(image_feature)
+        if torch.isnan(img_feat_raw).any(): print("DEBUG BartEncoder FWD: img_feat_raw_proj (after img_proj) has NaN!")
+
         # img_feat = self.layernorm_image_feature(img_feat)
-        img_feat = F.dropout(img_feat_, p=self.dropout, training=self.training)
+        img_feat = F.dropout(img_feat_raw, p=self.dropout, training=self.training)
         x = torch.cat((img_feat,x),dim=1)
+        if torch.isnan(x).any(): print("DEBUG BartEncoder FWD: x after torch.cat((img_feat,x),dim=1) has NaN!")
+
         attention_mask =torch.cat((image_mask,attention_mask),dim=-1)
         ###################
 
@@ -376,7 +393,11 @@ class BartEncoder(nn.Module):
 
         encoder_states = [] if output_hidden_states else None
         all_attentions = () if output_attentions else None
-        for encoder_layer in self.layers:
+
+        for idx, encoder_layer_module in enumerate(self.layers):
+
+            if torch.isnan(x).any():print(f"DEBUG BartEncoder FWD: x has NaN BEFORE EncoderLayer {idx}!")
+
             if output_hidden_states:
                 encoder_states.append(x)
             # add LayerDrop (see https://arxiv.org/abs/1909.11556 for description)
@@ -384,13 +405,25 @@ class BartEncoder(nn.Module):
             if self.training and (dropout_probability < self.layerdrop):  # skip the layer
                 attn = None
             else:
-                x, attn = encoder_layer(x, attention_mask, output_attentions=output_attentions)
+                x, attn = encoder_layer_module(x, attention_mask, output_attentions=output_attentions)
+                if torch.isnan(x).any(): # This was your existing check for any batch
+                    print(f"DEBUG BartEncoder FWD: x has NaN AFTER EncoderLayer {idx}!")
+                continue
 
+            if torch.isnasn(x).any():
+                print(f"DEBUG BartEncoder FWD: x has NaN AFTER EncoderLayer {idx}!")
+                # Return immediately if NaN is produced by a layer
+                # This helps pinpoint which layer is the culprit.
+                if not return_dict:
+                    return img_feat_raw, (x.transpose(0,1) if x is not None else None, None, None) # Crude early exit
+                return img_feat_raw, BaseModelOutput(last_hidden_state=x.transpose(0,1) if x is not None else None, hidden_states=None, attentions=None)
             if output_attentions:
                 all_attentions = all_attentions + (attn,)
 
         if self.layer_norm:
             x = self.layer_norm(x)
+            print(f"BartEncoder B2: After final layer_norm: min={x.min()}, max={x.max()}, hasNaN={torch.isnan(x).any()}")
+
         if output_hidden_states:
             encoder_states.append(x)
             # T x B x C -> B x T x C
@@ -401,7 +434,7 @@ class BartEncoder(nn.Module):
 
         if not return_dict:
             return tuple(v for v in [x, encoder_states, all_attentions] if v is not None)
-        return img_feat_, BaseModelOutput(last_hidden_state=x, hidden_states=encoder_states, attentions=all_attentions)
+        return img_feat, BaseModelOutput(last_hidden_state=x, hidden_states=encoder_states, attentions=all_attentions)
 
 
 class DecoderLayer(nn.Module):

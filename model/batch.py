@@ -249,6 +249,7 @@ class DataSetIter(BatchIter):
         """
         assert isinstance(dataset, DataSet)
         dataset = DataSetGetter(dataset, as_numpy)
+        print(dataset[0])
         collate_fn = dataset.collate_fn
         if batch_sampler is not None:
             batch_size = 1
