@@ -436,6 +436,8 @@ class TwitterNer(ConllLoader):
 
             ds.append(Instance(img_id=img_id, raw_words=raw_words, entities=entities, entity_tags=entity_tags,  
                                entity_spans=entity_spans, raw_target=target, coarse_target=coarse_target))
+            #ds.append(dict(img_id=img_id, raw_words=raw_words, entities=entities, entity_tags=entity_tags,  
+             #                  entity_spans=entity_spans, raw_target=target, coarse_target=coarse_target))
             if self.demo and len(ds) > 30:
                 break
         if len(ds) == 0:

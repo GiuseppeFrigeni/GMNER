@@ -28,11 +28,7 @@ def get_loss(tgt_tokens, tgt_seq_len, pred, region_pred,region_label,use_kl = Tr
     region_mask = region_label[:,:,:-1].sum(dim=-1).gt(0)   ## only for related 
 
     if region_pred is not None and region_mask.sum()!=0:
-        # --- START TEMPORARY MODIFICATION FOR DEBUGGING ---
-        #print("LOSS_FN_DEBUG: SKIPPING KLDiv region_loss, setting to 0.0 for testing.")
-        region_loss = torch.tensor(0.0, device=loss.device, requires_grad=True) 
-        # --- END TEMPORARY MODIFICATION FOR DEBUGGING ---
-        """
+        
         if use_kl:
             bbox_num = region_pred.size(-1)
            
@@ -81,7 +77,7 @@ def get_loss(tgt_tokens, tgt_seq_len, pred, region_pred,region_label,use_kl = Tr
             bbox_num = region_pred.size(-1)
             sample_weight = region_pred.new_full((bbox_num,),fill_value=1.)
             region_loss = F.binary_cross_entropy_with_logits(region_pred, target=BCE_target ,weight =  sample_weight)
-            """
+            
     else:
         region_loss = torch.tensor(0.,requires_grad=True).to(loss.device)
     

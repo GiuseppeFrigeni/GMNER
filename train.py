@@ -120,7 +120,6 @@ data_bundle, tokenizer, mapping2id = get_data()
 
 print(f'max_len_a:{max_len_a}, max_len:{max_len}')
 
-print(data_bundle)
 print("The number of tokens in tokenizer ", tokenizer.vocab_size)  
 
 bos_token_id = 0
@@ -152,7 +151,7 @@ if torch.cuda.is_available():
 else:
     device = 'cpu'
 
-torch.manual_seed(args.seed)
+#torch.manual_seed(args.seed)
 
 
 parameters =[]
@@ -279,10 +278,10 @@ collate_fn = create_collate_fn(
 def Training(args, train_idx, train_data, model, device, optimizer):
     
     #train_sampler = BucketSampler(seq_len_field_name='src_seq_len',batch_size=args.batch_size)   # 带Bucket的 Random Sampler. 可以随机地取出长度相似的元素
-    #train_data_iterator = DataSetIter(train_data, batch_size=args.batch_size, sampler=train_sampler)
-    train_data_iterator = torch.utils.data.DataLoader( 
-        dataset=train_data, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
+    #train_data_iterator = DataSetIter(train_data, batch_size=args.batch_size) #sampler=train_sampler)
+    train_data_iterator = torch.utils.data.DataLoader(dataset=train_data, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
 
+    
 
     train_loss = 0.
     train_region_loss = 0.
@@ -292,6 +291,9 @@ def Training(args, train_idx, train_data, model, device, optimizer):
         _move_dict_value_to_device(batch_x, device=device)
         src_tokens = batch_x['src_tokens']
         image_feature = batch_x['image_feature']
+
+        img_ids_for_debug = batch_x.get('img_id', ['N/A'])
+        print(f"DEBUG BATCH {batch_idx}: img_ids_for_debug: {img_ids_for_debug}")
 
         img_ids_for_debug = batch_x.get('img_id', ['N/A'])[:5]
         # --- Enhanced Debugging: Input Checks ---
@@ -335,16 +337,14 @@ def Training(args, train_idx, train_data, model, device, optimizer):
                 print(f"CRITICAL WARNING (Epoch {train_idx}, Batch {batch_idx}): model output 'region_pred_raw' (before clamp) contains NaN/Inf. Img IDs (first 5): {img_ids_for_debug}")
         # --- End Enhanced Debugging ---
 
-        #pred = torch.clamp(pred_raw, min=-30, max=30)
-        pred = pred_raw
+        pred = torch.clamp(pred_raw, min=-30, max=30)
+        #pred = pred_raw
         if region_pred_raw is not None:
             #region_pred = torch.clamp(region_pred_raw, min=-30, max=30)
             region_pred = region_pred_raw
         else:
             region_pred = None
 
-        print(f"TRAIN.PY : pred_raw (model output before clamp) min={pred_raw.min()}, max={pred_raw.max()}, hasNaN={torch.isnan(pred_raw).any()}")
-        print(f"TRAIN.PY : pred (clamped, input to get_loss) min={pred.min()}, max={pred.max()}, hasNaN={torch.isnan(pred).any()}")
 
         loss, region_loss = get_loss(tgt_tokens, tgt_seq_len, pred, region_pred,region_label,use_kl=args.use_kl)
         
@@ -399,18 +399,8 @@ def Training(args, train_idx, train_data, model, device, optimizer):
 
         optimizer.zero_grad() # Ensure grads are clear before backward
         all_loss.backward()
+
     
-        print(f"--- AFTER BACKWARD for BATCH {batch_idx} ---")
-        nan_in_grad = False
-        for name, param in model.named_parameters():
-            if param.grad is not None:
-                if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
-                    print(f"NaN/Inf in gradient of: {name} for batch {batch_idx}")
-                    nan_in_grad = True
-        # else:
-        #     print(f"Gradient for {name} is None") # Can be noisy
-        if not nan_in_grad:
-            print(f"No NaN/Inf gradients detected for batch {batch_idx} immediately after backward.")
 
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step() # This step would corrupt weights if grads were NaN

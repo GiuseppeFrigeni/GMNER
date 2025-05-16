@@ -4,12 +4,12 @@ python3 train.py \
     --bart_name facebook/bart-base \
     --n_epochs 1 \
     --seed 42 \
-    --datapath  ./Twitter10000/txt \
+    --datapath  ./Twitter10000_v2.0/txt \
     --image_feature_path ./Twitter10000_VinVL \
-    --image_annotation_path ./Twitter10000/xml \
-    --lr 3e-5 \
+    --image_annotation_path ./Twitter10000_v2.0/xml \
+    --lr 1e-5 \
     --box_num 18 \
-    --batch_size 32 \
+    --batch_size 1 \
     --max_len 30 \
     --save_model 1 \
     --normalize \

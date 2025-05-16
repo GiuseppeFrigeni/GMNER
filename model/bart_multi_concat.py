@@ -372,7 +372,10 @@ class CaGFBartDecoder(FBartDecoder):
                                              nn.Dropout(0.3),
                                              nn.ReLU(),
                                              nn.Linear(hidden_size,self.box_num))
-
+        
+        # Define a stable fill value
+        self.STABLE_FILL_VALUE = -10000.0 # Or -1e5, adjust if needed
+        
     def forward(self, img_feat_, tokens, state):  
         
         bsz, max_len = tokens.size()
@@ -427,9 +430,7 @@ class CaGFBartDecoder(FBartDecoder):
             except:
                 import pdb;pdb.set_trace()
         hidden_state = dict_decoder_output.last_hidden_state  # bsz x target_len x hidden_size
-        print(f"CaGF_DEBUG: hidden_state BEFORE dropout: min={hidden_state.min().item():.4f}, max={hidden_state.max().item():.4f}, hasNaN={torch.isnan(hidden_state).any()}")
         hidden_state = self.dropout_layer(hidden_state)
-        print(f"CaGF_DEBUG: hidden_state AFTER dropout: min={hidden_state.min().item():.4f}, max={hidden_state.max().item():.4f}, hasNaN={torch.isnan(hidden_state).any()}")
         if not self.training:
             state.past_key_values = dict_decoder_output.past_key_values
 
@@ -440,14 +441,10 @@ class CaGFBartDecoder(FBartDecoder):
         embed_tokens_weight_for_eos = self.decoder.embed_tokens.weight[2:3]
         embed_tokens_weight_for_tags = self.decoder.embed_tokens.weight[self.label_start_id:self.label_end_id]
 
-        print(f"CaGF_DEBUG: embed_tokens_weight_for_eos min={embed_tokens_weight_for_eos.min().item():.4f}, max={embed_tokens_weight_for_eos.max().item():.4f}")
-        print(f"CaGF_DEBUG: embed_tokens_weight_for_tags min={embed_tokens_weight_for_tags.min().item():.4f}, max={embed_tokens_weight_for_tags.max().item():.4f}")
 
         eos_scores = F.linear(hidden_state, self.dropout_layer(embed_tokens_weight_for_eos))
         tag_scores = F.linear(hidden_state, self.dropout_layer(embed_tokens_weight_for_tags))
         
-        print(f"CaGF_DEBUG: eos_scores min={eos_scores.min().item():.4f}, max={eos_scores.max().item():.4f}, hasNaN={torch.isnan(eos_scores).any()}")
-        print(f"CaGF_DEBUG: tag_scores min={tag_scores.min().item():.4f}, max={tag_scores.max().item():.4f}, hasNaN={torch.isnan(tag_scores).any()}")
        
         src_outputs = state.encoder_output[:,self.box_num:,:]  
         src_img_outputs = state.encoder_output[:,:self.box_num,:]
@@ -457,27 +454,19 @@ class CaGFBartDecoder(FBartDecoder):
             src_img_outputs_before_mlp = src_img_outputs
             src_outputs = self.encoder_mlp(src_outputs)
             src_img_outputs = self.encoder_mlp(src_img_outputs)
-            print(f"CaGF_DEBUG: src_outputs (text) BEFORE encoder_mlp: min={src_outputs_before_mlp.min().item():.4f}, max={src_outputs_before_mlp.max().item():.4f}")
-            print(f"CaGF_DEBUG: src_outputs (text) AFTER encoder_mlp: min={src_outputs.min().item():.4f}, max={src_outputs.max().item():.4f}, hasNaN={torch.isnan(src_outputs).any()}")
-            print(f"CaGF_DEBUG: src_img_outputs BEFORE encoder_mlp: min={src_img_outputs_before_mlp.min().item():.4f}, max={src_img_outputs_before_mlp.max().item():.4f}")
-            print(f"CaGF_DEBUG: src_img_outputs AFTER encoder_mlp: min={src_img_outputs.min().item():.4f}, max={src_img_outputs.max().item():.4f}, hasNaN={torch.isnan(src_img_outputs).any()}")
-            
+        
         if first is not None:
             mask = first.eq(0)  # bsz x 1 x max_word_len 
             src_outputs = src_outputs.gather(index=first.unsqueeze(2).repeat(1, 1, src_outputs.size(-1)), dim=1) # (bsz, max_len, 768)  # 取sentence内的encoder_output
         else:
-            print("CaGFBartDecoder WARNING: 'first' is None! Masking logic might be incorrect.")
             mask = torch.zeros_like(src_tokens, dtype=torch.bool, device=src_tokens.device)
 
         mask = mask.unsqueeze(1)
 
         input_embed = self.dropout_layer(self.decoder.embed_tokens(src_tokens))  # bsz x max_word_len x hidden_size
         input_img_embed = self.dropout_layer(img_feat_)  # bsz, box_num, hidden_size
-        print(f"CaGF_DEBUG: src_outputs (text, gathered) min={src_outputs.min().item():.4f}, max={src_outputs.max().item():.4f}, hasNaN={torch.isnan(src_outputs).any()}")
-        print(f"CaGF_DEBUG: input_embed (text) min={input_embed.min().item():.4f}, max={input_embed.max().item():.4f}, hasNaN={torch.isnan(input_embed).any()}")
-        print(f"CaGF_DEBUG: src_img_outputs min={src_img_outputs.min().item():.4f}, max={src_img_outputs.max().item():.4f}, hasNaN={torch.isnan(src_img_outputs).any()}")
-        print(f"CaGF_DEBUG: input_img_embed min={input_img_embed.min().item():.4f}, max={input_img_embed.max().item():.4f}, hasNaN={torch.isnan(input_img_embed).any()}")
-
+        
+    
         word_scores_einsum_inputs_hs = hidden_state
         word_scores_einsum_inputs_so = src_outputs 
         img_scores_einsum_inputs_sio = src_img_outputs 

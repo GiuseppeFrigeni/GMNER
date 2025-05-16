@@ -249,7 +249,8 @@ class DataSetIter(BatchIter):
         """
         assert isinstance(dataset, DataSet)
         dataset = DataSetGetter(dataset, as_numpy)
-        print(dataset[0])
+        print("-----DATASET-----")
+        print(dataset.dataset)
         collate_fn = dataset.collate_fn
         if batch_sampler is not None:
             batch_size = 1
@@ -264,9 +265,14 @@ class DataSetIter(BatchIter):
 
     def __iter__(self):
         self.init_iter()
-        for indices, batch_x, batch_y in self.dataiter:
-            self.cur_batch_indices = indices
-            yield batch_x, batch_y
+        for porcoddio in self.dataiter:
+            #self.cur_batch_indices = indices
+            print("-----BATCH-----")
+            print(self.dataiter.dataset.dataset)
+            print(porcoddio)
+            #print(batch_x)
+            #print(batch_y)
+            yield porcoddio# batch_x, batch_y
 
 
 class TorchLoaderIter(BatchIter):
