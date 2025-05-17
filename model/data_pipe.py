@@ -1,11 +1,19 @@
-from fastNLP.io import ConllLoader, Loader
-from fastNLP.io.loader.conll import _read_conll
-from fastNLP.io.pipe.utils import iob2, iob2bioes
-from fastNLP import  Instance
-from fastNLP.io import Pipe
+#from fastNLP.io import ConllLoader
+#from fastNLP.io.pipe.utils import iob2
+#from fastNLP import  Instance
+#from fastNLP.io import Pipe
+#from fastNLP.io import DataBundle
+
+from .data_bundle import DataBundle
+from .pipe import Pipe
+from .instance import Instance
+from .utils import iob2
+from .loader import ConllLoader
+
+
+
 from transformers import AutoTokenizer
 #from fastNLP.core.metrics import bio_tag_to_spans
-from fastNLP.io import DataBundle
 import numpy as np
 from itertools import chain
 #from fastNLP import Const

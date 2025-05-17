@@ -1,7 +1,264 @@
 
-from fastNLP import Metric
+#from fastNLP import Metric
 #from fastNLP.core.metrics import _compute_f_pre_rec
-import numpy as np
+import inspect
+from abc import abstractmethod
+from collections import defaultdict
+
+
+from .utils import _CheckError
+from .utils import _CheckRes
+from .utils import _build_args
+from .utils import _check_arg_dict_list
+from .utils import _get_func_signature
+
+
+class MetricBase(object):
+    r"""
+    所有metrics的基类,所有的传入到Trainer, Tester的Metric需要继承自该对象，需要覆盖写入evaluate(), get_metric()方法。
+    
+        evaluate(xxx)中传入的是一个batch的数据。
+        
+        get_metric(xxx)当所有数据处理完毕，调用该方法得到最终的metric值
+        
+    以分类问题中，Accuracy计算为例
+    假设model的forward返回dict中包含 `pred` 这个key, 并且该key需要用于Accuracy::
+    
+        class Model(nn.Module):
+            def __init__(xxx):
+                # do something
+            def forward(self, xxx):
+                # do something
+                return {'pred': pred, 'other_keys':xxx} # pred's shape: batch_size x num_classes
+                
+    假设dataset中 `label` 这个field是需要预测的值，并且该field被设置为了target
+    对应的AccMetric可以按如下的定义, version1, 只使用这一次::
+    
+        class AccMetric(MetricBase):
+            def __init__(self):
+                super().__init__()
+    
+                # 根据你的情况自定义指标
+                self.corr_num = 0
+                self.total = 0
+    
+            def evaluate(self, label, pred): # 这里的名称需要和dataset中target field与model返回的key是一样的，不然找不到对应的value
+                # dev或test时，每个batch结束会调用一次该方法，需要实现如何根据每个batch累加metric
+                self.total += label.size(0)
+                self.corr_num += label.eq(pred).sum().item()
+    
+            def get_metric(self, reset=True): # 在这里定义如何计算metric
+                acc = self.corr_num/self.total
+                if reset: # 是否清零以便重新计算
+                    self.corr_num = 0
+                    self.total = 0
+                return {'acc': acc} # 需要返回一个dict，key为该metric的名称，该名称会显示到Trainer的progress bar中
+
+
+    version2，如果需要复用Metric，比如下一次使用AccMetric时，dataset中目标field不叫label而叫y，或者model的输出不是pred::
+    
+        class AccMetric(MetricBase):
+            def __init__(self, label=None, pred=None):
+                # 假设在另一场景使用时，目标field叫y，model给出的key为pred_y。则只需要在初始化AccMetric时，
+                #   acc_metric = AccMetric(label='y', pred='pred_y')即可。
+                # 当初始化为acc_metric = AccMetric()，即label=None, pred=None, fastNLP会直接使用'label', 'pred'作为key去索取对
+                #   应的的值
+                super().__init__()
+                self._init_param_map(label=label, pred=pred) # 该方法会注册label和pred. 仅需要注册evaluate()方法会用到的参数名即可
+                # 如果没有注册该则效果与version1就是一样的
+    
+                # 根据你的情况自定义指标
+                self.corr_num = 0
+                self.total = 0
+    
+            def evaluate(self, label, pred): # 这里的参数名称需要和self._init_param_map()注册时一致。
+                # dev或test时，每个batch结束会调用一次该方法，需要实现如何根据每个batch累加metric
+                self.total += label.size(0)
+                self.corr_num += label.eq(pred).sum().item()
+    
+            def get_metric(self, reset=True): # 在这里定义如何计算metric
+                acc = self.corr_num/self.total
+                if reset: # 是否清零以便重新计算
+                    self.corr_num = 0
+                    self.total = 0
+                return {'acc': acc} # 需要返回一个dict，key为该metric的名称，该名称会显示到Trainer的progress bar中
+
+
+    ``MetricBase`` 将会在输入的字典 ``pred_dict`` 和 ``target_dict`` 中进行检查.
+    ``pred_dict`` 是模型当中 ``forward()`` 函数或者 ``predict()`` 函数的返回值.
+    ``target_dict`` 是DataSet当中的ground truth, 判定ground truth的条件是field的 ``is_target`` 被设置为True.
+
+    ``MetricBase`` 会进行以下的类型检测:
+
+    1. self.evaluate当中是否有varargs, 这是不支持的.
+    2. self.evaluate当中所需要的参数是否既不在 ``pred_dict`` 也不在 ``target_dict`` .
+    3. self.evaluate当中所需要的参数是否既在 ``pred_dict`` 也在 ``target_dict`` .
+
+    除此以外，在参数被传入self.evaluate以前，这个函数会检测 ``pred_dict`` 和 ``target_dict`` 当中没有被用到的参数
+    如果kwargs是self.evaluate的参数，则不会检测
+
+
+    self.evaluate将计算一个批次(batch)的评价指标，并累计。 没有返回值
+    self.get_metric将统计当前的评价指标并返回评价结果, 返回值需要是一个dict, key是指标名称，value是指标的值
+
+    """
+
+    def __init__(self):
+        self._param_map = {}  # key is param in function, value is input param.
+        self._checked = False
+        self._metric_name = self.__class__.__name__
+
+    @property
+    def param_map(self):
+        if len(self._param_map) == 0:  # 如果为空说明还没有初始化
+            func_spect = inspect.getfullargspec(self.evaluate)
+            func_args = [arg for arg in func_spect.args if arg != 'self']
+            for arg in func_args:
+                self._param_map[arg] = arg
+        return self._param_map
+
+    @abstractmethod
+    def evaluate(self, *args, **kwargs):
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_metric(self, reset=True):
+        raise NotImplemented
+
+    def set_metric_name(self, name: str):
+        r"""
+        设置metric的名称，默认是Metric的class name.
+
+        :param str name:
+        :return: self
+        """
+        self._metric_name = name
+        return self
+
+    def get_metric_name(self):
+        r"""
+        返回metric的名称
+        
+        :return:
+        """
+        return self._metric_name
+
+    def _init_param_map(self, key_map=None, **kwargs):
+        r"""检查key_map和其他参数map，并将这些映射关系添加到self._param_map
+
+        :param dict key_map: 表示key的映射关系
+        :param kwargs: key word args里面的每一个的键-值对都会被构造成映射关系
+        :return: None
+        """
+        value_counter = defaultdict(set)
+        if key_map is not None:
+            if not isinstance(key_map, dict):
+                raise TypeError("key_map must be `dict`, got {}.".format(type(key_map)))
+            for key, value in key_map.items():
+                if value is None:
+                    self._param_map[key] = key
+                    continue
+                if not isinstance(key, str):
+                    raise TypeError(f"key in key_map must be `str`, not `{type(key)}`.")
+                if not isinstance(value, str):
+                    raise TypeError(f"value in key_map must be `str`, not `{type(value)}`.")
+                self._param_map[key] = value
+                value_counter[value].add(key)
+        for key, value in kwargs.items():
+            if value is None:
+                self._param_map[key] = key
+                continue
+            if not isinstance(value, str):
+                raise TypeError(f"in {key}={value}, value must be `str`, not `{type(value)}`.")
+            self._param_map[key] = value
+            value_counter[value].add(key)
+        for value, key_set in value_counter.items():
+            if len(key_set) > 1:
+                raise ValueError(f"Several parameters:{key_set} are provided with one output {value}.")
+
+        # check consistence between signature and _param_map
+        func_spect = inspect.getfullargspec(self.evaluate)
+        func_args = [arg for arg in func_spect.args if arg != 'self']
+        for func_param, input_param in self._param_map.items():
+            if func_param not in func_args:
+                raise NameError(
+                    f"Parameter `{func_param}` is not in {_get_func_signature(self.evaluate)}. Please check the "
+                    f"initialization parameters, or change its signature.")
+
+    def __call__(self, pred_dict, target_dict):
+        r"""
+        这个方法会调用self.evaluate 方法.
+        在调用之前，会进行以下检测:
+            1. self.evaluate当中是否有varargs, 这是不支持的.
+            2. self.evaluate当中所需要的参数是否既不在``pred_dict``也不在``target_dict``.
+            3. self.evaluate当中所需要的参数是否既在``pred_dict``也在``target_dict``.
+
+            除此以外，在参数被传入self.evaluate以前，这个函数会检测``pred_dict``和``target_dict``当中没有被用到的参数
+            如果kwargs是self.evaluate的参数，则不会检测
+        :param pred_dict: 模型的forward函数或者predict函数返回的dict
+        :param target_dict: DataSet.batch_y里的键-值对所组成的dict(即is_target=True的fields的内容)
+        :return:
+        """
+
+        if not self._checked:
+            if not callable(self.evaluate):
+                raise TypeError(f"{self.__class__.__name__}.evaluate has to be callable, not {type(self.evaluate)}.")
+            # 1. check consistence between signature and _param_map
+            func_spect = inspect.getfullargspec(self.evaluate)
+            func_args = set([arg for arg in func_spect.args if arg != 'self'])
+            for func_arg, input_arg in self._param_map.items():
+                if func_arg not in func_args:
+                    raise NameError(f"`{func_arg}` not in {_get_func_signature(self.evaluate)}.")
+
+            # 2. only part of the _param_map are passed, left are not
+            for arg in func_args:
+                if arg not in self._param_map:
+                    self._param_map[arg] = arg  # This param does not need mapping.
+            self._evaluate_args = func_args
+            self._reverse_param_map = {input_arg: func_arg for func_arg, input_arg in self._param_map.items()}
+
+        # need to wrap inputs in dict.
+        mapped_pred_dict = {}
+        mapped_target_dict = {}
+        for input_arg, mapped_arg in self._reverse_param_map.items():
+            if input_arg in pred_dict:
+                mapped_pred_dict[mapped_arg] = pred_dict[input_arg]
+            if input_arg in target_dict:
+                mapped_target_dict[mapped_arg] = target_dict[input_arg]
+
+        # missing
+        if not self._checked:
+            duplicated = []
+            for input_arg, mapped_arg in self._reverse_param_map.items():
+                if input_arg in pred_dict and input_arg in target_dict:
+                    duplicated.append(input_arg)
+            check_res = _check_arg_dict_list(self.evaluate, [mapped_pred_dict, mapped_target_dict])
+            # only check missing.
+            # replace missing.
+            missing = check_res.missing
+            replaced_missing = list(missing)
+            for idx, func_arg in enumerate(missing):
+                # Don't delete `` in this information, nor add ``
+                replaced_missing[idx] = f"{self._param_map[func_arg]}" + f"(assign to `{func_arg}` " \
+                                                                         f"in `{self.__class__.__name__}`)"
+
+            check_res = _CheckRes(missing=replaced_missing,
+                                  unused=check_res.unused,
+                                  duplicated=duplicated,
+                                  required=check_res.required,
+                                  all_needed=check_res.all_needed,
+                                  varargs=check_res.varargs)
+
+            if check_res.missing or check_res.duplicated:
+                raise _CheckError(check_res=check_res,
+                                  func_signature=_get_func_signature(self.evaluate))
+            self._checked = True
+        refined_args = _build_args(self.evaluate, **mapped_pred_dict, **mapped_target_dict)
+
+        self.evaluate(**refined_args)
+
+        return
+
 
 def _compute_f_pre_rec(beta_square, tp, fn, fp):
     r"""
@@ -17,7 +274,7 @@ def _compute_f_pre_rec(beta_square, tp, fn, fp):
 
     return f, pre, rec
 
-class Seq2SeqSpanMetric(Metric):
+class Seq2SeqSpanMetric(MetricBase):
     def __init__(self, eos_token_id, num_labels, region_num,target_type='bpe',print_mode = False):
         super(Seq2SeqSpanMetric, self).__init__()
         self.eos_token_id = eos_token_id

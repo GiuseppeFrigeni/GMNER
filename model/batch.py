@@ -19,8 +19,6 @@ from collections import defaultdict
 
 from .dataset import DataSet
 from .sampler import SequentialSampler, Sampler
-from ._logger import logger
-
 
 _python_is_exit = False
 

@@ -22,7 +22,6 @@ __all__ = [
 ]
 
 import logging
-import logging.config
 import os
 import sys
 import warnings
@@ -30,10 +29,6 @@ from torch import distributed as dist
 
 ROOT_NAME = 'fastNLP'
 
-try:
-    import fitlog
-except ImportError:
-    fitlog = None
 try:
     from tqdm.auto import tqdm
 except ImportError:

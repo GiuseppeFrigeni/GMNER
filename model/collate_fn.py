@@ -1,10 +1,9 @@
-r"""undocumented"""
-from builtins import sorted
-
 import torch
 import numpy as np
 from .field import _get_ele_type_and_dim
 from copy import deepcopy
+
+
 
 __all__ = ['ConcatCollateFn']
 

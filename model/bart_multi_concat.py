@@ -1,8 +1,9 @@
 import torch
 from .modeing_bart_multi_concat import BartEncoder, BartDecoder, BartModel
 from transformers import BartTokenizer
-from fastNLP import seq_len_to_mask
+from .utils import seq_len_to_mask
 
+#from fastNLP import seq_len_to_mask
 #from fastNLP.modules import Seq2SeqEncoder, Seq2SeqDecoder, State
 #from fastNLP.models import Seq2SeqModel
 
@@ -11,9 +12,7 @@ from typing import Union, List, Tuple
 
 import torch.nn.functional as F
 from torch import nn
-import math
 
-## Imported from fastNLP
 
 class State:
 

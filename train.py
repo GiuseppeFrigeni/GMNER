@@ -24,7 +24,7 @@ from model.losses import get_loss
 
 import fitlog
 import datetime
-from fastNLP import Trainer
+#from fastNLP import Trainer
 
 from torch import optim
 #from fastNLP import  SequentialSampler, BucketSampler,GradientClipCallback, cache_results, EarlyStopCallback

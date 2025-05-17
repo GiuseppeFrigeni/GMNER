@@ -1,8 +1,11 @@
 #from fastNLP.callbacks import Callback
-from fastNLP import DataSet, Tester
+#from fastNLP import DataSet, Tester
+from .dataset import DataSet
+from .tester import Tester
+
 import fitlog
 from copy import deepcopy
-from typing import Callable, Dict, Optional
+from typing import Dict, Optional
 
 
 class Callback:

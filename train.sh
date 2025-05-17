@@ -9,7 +9,7 @@ python3 train.py \
     --image_annotation_path ./Twitter10000_v2.0/xml \
     --lr 1e-5 \
     --box_num 18 \
-    --batch_size 1 \
+    --batch_size 16 \
     --max_len 30 \
     --save_model 1 \
     --normalize \
