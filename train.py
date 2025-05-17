@@ -292,53 +292,21 @@ def Training(args, train_idx, train_data, model, device, optimizer):
         src_tokens = batch_x['src_tokens']
         image_feature = batch_x['image_feature']
 
-        img_ids_for_debug = batch_x.get('img_id', ['N/A'])
-        print(f"DEBUG BATCH {batch_idx}: img_ids_for_debug: {img_ids_for_debug}")
-
-        img_ids_for_debug = batch_x.get('img_id', ['N/A'])[:5]
-        # --- Enhanced Debugging: Input Checks ---
-        if torch.isnan(batch_x['image_feature']).any() or torch.isinf(batch_x['image_feature']).any():
-            print(f"CRITICAL WARNING: image_feature contains NaN/Inf at epoch {train_idx}, batch_ids (first 5): {batch_x.get('img_id', ['N/A'])[:5]}")
-        # src_tokens are indices, less likely to be NaN unless data loading is corrupt
-        # if torch.isnan(batch_x['src_tokens']).any() or torch.isinf(batch_x['src_tokens']).any():
-        #     print(f"CRITICAL WARNING: src_tokens contains NaN/Inf at epoch {train_idx}, batch_ids (first 5): {batch_x.get('img_id', ['N/A'])[:5]}")
-
-
         tgt_tokens = batch_x['tgt_tokens']
         src_seq_len = batch_x['src_seq_len']
         tgt_seq_len = batch_x['tgt_seq_len']
         first = batch_x['first']
         region_label = batch_x['region_label']
 
-        # In Training function, input checks section:
-        if 'tgt_tokens' in batch_x and batch_x['tgt_tokens'].shape[1] < 2:
-            print(f"CRITICAL WARNING (Epoch {train_idx}, Batch {batch_idx}): Padded target token sequence length is {batch_x['tgt_tokens'].shape[1]} (< 2). Img IDs (first 5): {img_ids_for_debug}")
 
-        # Check original target sequence lengths (should be >= 2 for [BOS, EOS] minimum)
-        if hasattr(batch_x['tgt_seq_len'], "min") and batch_x['tgt_seq_len'].min().item() < 2:
-            problematic_ids = []
-            if 'img_id' in batch_x:
-                for i, length in enumerate(batch_x['tgt_seq_len'].tolist()):
-                    if length < 2:
-                        problematic_ids.append(batch_x['img_id'][i])
-            print(f"CRITICAL WARNING: Minimum original target sequence length (tgt_seq_len) is {batch_x['tgt_seq_len'].min().item()} at epoch {train_idx}. Problematic img_ids (if any): {problematic_ids[:5]}")
-            # This can lead to issues in get_loss if tgt_tokens[:, 1:] becomes empty.
-        # --- End Enhanced Debugging ---
 
         results = model(src_tokens,image_feature, tgt_tokens, src_seq_len=src_seq_len, tgt_seq_len=tgt_seq_len, first=first)
         pred_raw, region_pred_raw = results['pred'],results['region_pred']       
 
          
-        # --- Enhanced Debugging: Model Output Checks (BEFORE CLAMPING) ---
-        if torch.isnan(pred_raw).any() or torch.isinf(pred_raw).any():
-            print(f"CRITICAL WARNING (Epoch {train_idx}, Batch {batch_idx}): model output 'pred_raw' (before clamp) contains NaN/Inf. Img IDs (first 5): {img_ids_for_debug}")
-        if region_pred_raw is not None:
-            if torch.isnan(region_pred_raw).any() or torch.isinf(region_pred_raw).any():
-                print(f"CRITICAL WARNING (Epoch {train_idx}, Batch {batch_idx}): model output 'region_pred_raw' (before clamp) contains NaN/Inf. Img IDs (first 5): {img_ids_for_debug}")
-        # --- End Enhanced Debugging ---
 
-        pred = torch.clamp(pred_raw, min=-30, max=30)
-        #pred = pred_raw
+        #pred = torch.clamp(pred_raw, min=-30, max=30)
+        pred = pred_raw
         if region_pred_raw is not None:
             #region_pred = torch.clamp(region_pred_raw, min=-30, max=30)
             region_pred = region_pred_raw
@@ -352,68 +320,22 @@ def Training(args, train_idx, train_data, model, device, optimizer):
         train_loss += loss.item() if not torch.isnan(loss) else 0 # Avoid propagating NaN to sum
         train_region_loss += region_loss.item() if not torch.isnan(region_loss) else 0
         
-        # Accumulate loss, handling potential NaNs from get_loss
-        batch_actual_loss = 0.0
-        if not torch.isnan(loss):
-            train_loss += loss.item()
-            batch_actual_loss += loss # Keep as tensor for all_loss
-        else:
-            print(f"WARNING (Epoch {train_idx}, Batch {batch_idx}): 'loss' from get_loss is NaN. Img IDs (first 5): {img_ids_for_debug}")
-
-        batch_actual_region_loss = 0.0 # Will be tensor or float
-        if region_loss is not None and not torch.isnan(region_loss):
-            train_region_loss += region_loss.item()
-            batch_actual_region_loss = region_loss # Keep as tensor
-        elif region_loss is not None and torch.isnan(region_loss):
-            print(f"WARNING (Epoch {train_idx}, Batch {batch_idx}): 'region_loss_val' from get_loss is NaN. Img IDs (first 5): {img_ids_for_debug}")
-
-        # Construct all_loss more carefully
-        if isinstance(batch_actual_loss, torch.Tensor) and isinstance(batch_actual_region_loss, torch.Tensor):
-            all_loss = batch_actual_loss + args.region_loss_ratio * batch_actual_region_loss
-        elif isinstance(batch_actual_loss, torch.Tensor): # region_loss was None or NaN
-            all_loss = batch_actual_loss
-        elif isinstance(batch_actual_region_loss, torch.Tensor): # main loss was NaN
-            all_loss = args.region_loss_ratio * batch_actual_region_loss
-        else: # Both losses were problematic (NaN or main loss NaN and region_loss None)
-            print(f"WARNING (Epoch {train_idx}, Batch {batch_idx}): Both components of loss are problematic. Skipping backward for this batch. Img IDs: {img_ids_for_debug}")
-            optimizer.zero_grad()
-            continue
         
-        # Safeguard check for all_loss being NaN before backward
-        if torch.isnan(all_loss):
-            print(f"CRITICAL WARNING (Epoch {train_idx}, Batch {batch_idx}): Total loss 'all_loss' is NaN BEFORE backward. Skipping backward. Img IDs: {img_ids_for_debug}")
-            optimizer.zero_grad() 
-            continue
+
 
         all_loss = loss + args.region_loss_ratio * region_loss
 
-        
-        print(f"--- BATCH {batch_idx} ---")
-        print(f"Loss: {loss.item()}, Region Loss: {region_loss.item()}, All Loss: {all_loss.item()}")
     
-        shared_embedding_layer = model.seq2seq_model.encoder.bart_encoder.embed_tokens # Get the nn.Embedding layer
-        if shared_embedding_layer is not None:
-            old_embed_weights_sum = shared_embedding_layer.weight.detach().sum()
-            print(f"DEBUG BATCH {batch_idx}: Sum of embed_tokens.weight BEFORE backward: {old_embed_weights_sum}")
-
 
         optimizer.zero_grad() # Ensure grads are clear before backward
         all_loss.backward()
 
     
 
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step() # This step would corrupt weights if grads were NaN
 
-        if shared_embedding_layer is not None:
-            new_embed_weights_sum = shared_embedding_layer.weight.detach().sum()
-            print(f"DEBUG BATCH {batch_idx}: Sum of embed_tokens.weight AFTER optimizer.step: {new_embed_weights_sum}")
-            if torch.isnan(shared_embedding_layer.weight).any():
-                print(f"CRITICAL BATCH {batch_idx}: embed_tokens.weight IS NOW NaN AFTER optimizer.step for batch {batch_idx}!")
 
-
-        if torch.isnan(loss) or torch.isinf(loss):
-            raise ValueError(f"train_loss is NaN/Inf after epoch {train_idx}.")
 
     print("train_loss: %f"%(train_loss))
     print("train_region_loss: %f"%(train_region_loss))
