@@ -62,7 +62,7 @@ class SequenceGeneratorModel(nn.Module):
                                            restricter=restricter,
                                            top_k = top_k)
 
-    def forward(self, src_tokens,image_feature, tgt_tokens, src_seq_len=None, tgt_seq_len=None, first=None, text_only=False):
+    def forward(self, src_tokens,image_feature, tgt_tokens, src_seq_len=None, tgt_seq_len=None, first=None):
         """
         透传调用seq2seq_model的forward
 
@@ -73,9 +73,9 @@ class SequenceGeneratorModel(nn.Module):
         :return:
         """
         
-        return self.seq2seq_model(src_tokens, image_feature,tgt_tokens, src_seq_len, tgt_seq_len, first, text_only=text_only)
+        return self.seq2seq_model(src_tokens, image_feature,tgt_tokens, src_seq_len, tgt_seq_len, first)
 
-    def predict(self, src_tokens, image_feature,src_seq_len=None, first=None, text_only=False):
+    def predict(self, src_tokens, image_feature,src_seq_len=None, first=None):
         """
         给定source的内容，输出generate的内容
 
@@ -84,8 +84,8 @@ class SequenceGeneratorModel(nn.Module):
         :return:
         """
         
-        img_feat_, state = self.seq2seq_model.prepare_state(src_tokens, image_feature, src_seq_len, first, text_only=text_only)
-        result,region_result = self.generator.generate(img_feat_, state, text_only=text_only)
+        img_feat_, state = self.seq2seq_model.prepare_state(src_tokens, image_feature, src_seq_len, first)
+        result,region_result = self.generator.generate(img_feat_, state)
         return {'pred': result,'region_pred':region_result}
 
 
@@ -164,7 +164,7 @@ class SequenceGenerator:
                                      restricter=restricter,top_k= self.top_k)
 
     @torch.no_grad()
-    def generate(self, img_feat_, state, tokens=None,text_only=False):
+    def generate(self, img_feat_, state, tokens=None):
         """
 
         :param State state: encoder结果的State, 是与Decoder配套是用的
@@ -172,13 +172,13 @@ class SequenceGenerator:
         :return: bsz x max_length' 生成的token序列。如果eos_token_id不为None, 每个sequence的结尾一定是eos_token_id
         """
         # import pdb;pdb.set_trace() # jmwang 此处的tokens 确为 None
-        return self.generate_func(img_feat_=img_feat_, tokens=tokens, state=state, text_only=text_only)
+        return self.generate_func(img_feat_=img_feat_, tokens=tokens, state=state)
 
 
 @torch.no_grad()
 def greedy_generate(decoder, tokens=None, state=None,img_feat_=None, max_length=20, max_len_a=0.0, num_beams=1,
                     bos_token_id=None, eos_token_id=None, pad_token_id=0,
-                    repetition_penalty=1, length_penalty=1.0, restricter=None,top_k = 1, text_only=False):
+                    repetition_penalty=1, length_penalty=1.0, restricter=None,top_k = 1):
     """
     贪婪地搜索句子
 
@@ -199,13 +199,13 @@ def greedy_generate(decoder, tokens=None, state=None,img_feat_=None, max_length=
         token_ids,region_ids = _no_beam_search_generate(decoder, img_feat_= img_feat_, tokens=tokens, state=state, max_length=max_length, max_len_a=max_len_a,
                                              bos_token_id=bos_token_id, eos_token_id=eos_token_id,
                                              repetition_penalty=repetition_penalty, length_penalty=length_penalty,
-                                             pad_token_id=pad_token_id, restricter=restricter,top_k=top_k, text_only=text_only)
+                                             pad_token_id=pad_token_id, restricter=restricter,top_k=top_k)
     else:
         token_ids = _beam_search_generate(decoder, tokens=tokens, state=state, max_length=max_length, max_len_a=max_len_a,
                                           num_beams=num_beams,
                                           bos_token_id=bos_token_id, eos_token_id=eos_token_id, do_sample=False,
                                           repetition_penalty=repetition_penalty, length_penalty=length_penalty,
-                                          pad_token_id=pad_token_id, restricter=restricter, text_only=text_only)
+                                          pad_token_id=pad_token_id, restricter=restricter)
 
     return token_ids, region_ids
 
@@ -213,7 +213,7 @@ def greedy_generate(decoder, tokens=None, state=None,img_feat_=None, max_length=
 def _no_beam_search_generate(decoder: Seq2SeqDecoder, state, img_feat_=None,tokens=None, max_length=20, max_len_a=0.0, bos_token_id=None,
                              eos_token_id=None,
                              repetition_penalty=1.0, length_penalty=1.0, pad_token_id=0,
-                             restricter=None,top_k = 1, text_only=False):
+                             restricter=None,top_k = 1):
     device = _get_model_device(decoder)
     region_threshold = 0.0
 
@@ -235,7 +235,7 @@ def _no_beam_search_generate(decoder: Seq2SeqDecoder, state, img_feat_=None,toke
 
     region_ids = torch.full([batch_size, 1, top_k], fill_value=bos_token_id, dtype=torch.long).to(device)
 
-    scores, region_scores = decoder.decode(img_feat_= img_feat_, tokens=tokens, state=state, text_only=text_only) ## return logits
+    scores, region_scores = decoder.decode(img_feat_= img_feat_, tokens=tokens, state=state) ## return logits
     
     if restricter is not None:
         _, next_tokens = restricter(state, tokens, scores, num_beams=1)
@@ -243,16 +243,12 @@ def _no_beam_search_generate(decoder: Seq2SeqDecoder, state, img_feat_=None,toke
         next_tokens = scores.argmax(dim=-1, keepdim=True)
 
     ###
-    if not text_only:
-        region_scores = torch.softmax(region_scores,dim=-1)
-        next_region_conf, next_regions = region_scores.topk(k= top_k, dim= -1, largest= True)
-        none = torch.full(next_regions.size(), fill_value=region_scores.size(-1), dtype=torch.long).to(device)
-        next_regions = torch.where(next_region_conf < region_threshold, none,next_regions)
-        region_ids = torch.cat([region_ids,next_regions.unsqueeze(1)],dim= 1)
-    else:
-        padding_regions = torch.full((batch_size, 1, top_k), pad_token_id, dtype=torch.long, device=device)
-        region_ids = torch.cat([region_ids, padding_regions], dim=1)
-
+    region_scores = torch.softmax(region_scores,dim=-1)
+    next_region_conf, next_regions = region_scores.topk(k= top_k, dim= -1, largest= True)
+    none = torch.full(next_regions.size(), fill_value=region_scores.size(-1), dtype=torch.long).to(device)
+    next_regions = torch.where(next_region_conf < region_threshold, none,next_regions)
+    
+    region_ids = torch.cat([region_ids,next_regions.unsqueeze(1)],dim= 1)
 
 
     
@@ -276,7 +272,7 @@ def _no_beam_search_generate(decoder: Seq2SeqDecoder, state, img_feat_=None,toke
             max_lengths = tokens.new_full((tokens.size(0),), fill_value=max_length, dtype=torch.long)
 
     while cur_len < real_max_length:
-        scores, region_scores = decoder.decode(img_feat_=img_feat_, tokens=token_ids, state=state, text_only=text_only)
+        scores, region_scores = decoder.decode(img_feat_=img_feat_, tokens=token_ids, state=state)
 
         if repetition_penalty != 1.0:
             token_scores = scores.gather(dim=1, index=token_ids)
@@ -298,16 +294,12 @@ def _no_beam_search_generate(decoder: Seq2SeqDecoder, state, img_feat_=None,toke
             next_tokens = scores.argmax(dim=-1, keepdim=True)
         next_tokens = next_tokens.squeeze(-1)
 
-        if not text_only:
-            region_scores = torch.softmax(region_scores,dim=-1)
-            next_region_conf, next_regions = region_scores.topk(k= top_k, dim= -1, largest= True)
-            none = torch.full(next_regions.size(), fill_value=region_scores.size(-1), dtype=torch.long).to(device)
-            next_regions = torch.where(next_region_conf < region_threshold, none,next_regions)
-            region_ids = torch.cat([region_ids,next_regions.unsqueeze(1)],dim= 1)
-        else:
-            padding_regions = torch.full((batch_size, 1, top_k), pad_token_id, dtype=torch.long, device=device)
-            region_ids = torch.cat([region_ids, padding_regions], dim=1)
-
+        region_scores = torch.softmax(region_scores,dim=-1)
+        next_region_conf, next_regions = region_scores.topk(k= top_k, dim= -1, largest= True)
+        none = torch.full(next_regions.size(), fill_value=region_scores.size(-1), dtype=torch.long).to(device)
+        next_regions = torch.where(next_region_conf < region_threshold, none,next_regions)
+    
+        region_ids = torch.cat([region_ids,next_regions.unsqueeze(1)],dim= 1)
         # 如果已经达到对应的sequence长度了，就直接填为eos了
         if _eos_token_id!=-1:
             next_tokens = next_tokens.masked_fill(max_lengths.eq(cur_len+1), _eos_token_id)
@@ -324,11 +316,6 @@ def _no_beam_search_generate(decoder: Seq2SeqDecoder, state, img_feat_=None,toke
 
         if dones.min() == 1:
             break
-        
-    # Trim the initial BOS from region_ids if it was added as a placeholder and not from actual prediction
-    #if region_ids.size(1) == token_ids.size(1) : # If region_ids kept pace with token_ids (had an initial BOS too)
-        #region_ids = region_ids[:, 1:] # Remove the placeholder BOS, as actual regions correspond to generated tokens
-
 
     return token_ids,region_ids
 
