@@ -1,5 +1,5 @@
 import torch
-from .modeing_bart_multi_concat import BartEncoder, BartDecoder, BartModel
+from .modeling_bart_multi_concat import BartEncoder, BartDecoder, BartModel
 from transformers import BartTokenizer
 from .utils import seq_len_to_mask
 
