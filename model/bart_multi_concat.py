@@ -280,7 +280,7 @@ class FBartDecoder(Seq2SeqDecoder):
                                              nn.ReLU(),
                                              nn.Linear(hidden_size, hidden_size))
 
-    def forward(self, tokens, state):
+    def forward(self, tokens, state, text_only=False):
         # bsz, max_len = tokens.size()
         encoder_outputs = state.encoder_output
         encoder_pad_mask = state.encoder_mask
@@ -362,9 +362,9 @@ class FBartDecoder(Seq2SeqDecoder):
 
         return logits
 
-    def decode(self,img_feat_,  tokens, state):
+    def decode(self,img_feat_,  tokens, state, text_only=False):
         # return self(tokens, state)[:, -1]
-        return self(img_feat_, tokens, state)
+        return self(img_feat_, tokens, state, text_only=text_only)
 
 
 class CaGFBartDecoder(FBartDecoder):
