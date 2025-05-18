@@ -358,6 +358,8 @@ class BartEncoder(nn.Module):
         x = self.layernorm_embedding(x)
         x = F.dropout(x, p=self.dropout, training=self.training)
 
+        img_feat = None
+
         if not text_only:
             ############## 拼接图像 添加掩码
             # import pdb;pdb.set_trace()

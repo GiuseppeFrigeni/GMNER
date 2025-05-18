@@ -253,7 +253,7 @@ class FBartEncoder(Seq2SeqEncoder):
         hidden_states = dict_encoder_output.hidden_states
         
         if text_only:
-            return None, encoder_outputs, mask, hidden_states
+            return img_feat_, encoder_outputs, mask, hidden_states
         
         multi_modal_mask = torch.cat((image_mask,mask),dim=-1)
         return img_feat_, encoder_outputs, multi_modal_mask, hidden_states
