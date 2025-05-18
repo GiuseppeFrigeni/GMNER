@@ -240,7 +240,10 @@ class FBartEncoder(Seq2SeqEncoder):
 
     def forward(self, src_tokens, image_feature, src_seq_len, text_only=False):
         mask = seq_len_to_mask(src_seq_len, max_len=src_tokens.size(1))
-        image_mask = mask_image(image_feature)    
+        if not text_only:
+            image_mask = mask_image(image_feature)
+        else:
+            image_mask = None    
 
         img_feat_, dict_encoder_output = self.bart_encoder(input_ids=src_tokens, image_feature=image_feature, attention_mask=mask, image_mask = image_mask, return_dict=True,
                                  output_hidden_states=True, text_only=text_only)  # last_hidden_state: tensor(bsz, max_len, 768),  hidden_states: tuple((baz, max_len, 768)),  attentions
@@ -248,6 +251,7 @@ class FBartEncoder(Seq2SeqEncoder):
         if torch.isnan(encoder_outputs).any() or torch.isinf(encoder_outputs).any():
             print(f"DEBUG FBartEncoder: encoder_outputs (dict.last_hidden_state) CONTAINS NaN/Inf!")
         hidden_states = dict_encoder_output.hidden_states
+        
         if text_only:
             return None, encoder_outputs, mask, hidden_states
         
