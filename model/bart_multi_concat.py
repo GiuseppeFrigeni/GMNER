@@ -605,7 +605,7 @@ class BartSeq2SeqModel(Seq2SeqModel):
         """
         
         img_feat_, state = self.prepare_state(src_tokens, image_feature,src_seq_len, first, tgt_seq_len, text_only=text_only)
-        decoder_output, region_pred = self.decoder(img_feat_, tgt_tokens, state)  # (bsz, max_target, 95) # 95, 每个预测的token上分 max_len+类别数 类
+        decoder_output, region_pred = self.decoder(img_feat_, tgt_tokens, state, text_only=text_only)  # (bsz, max_target, 95) # 95, 每个预测的token上分 max_len+类别数 类
         if isinstance(decoder_output, torch.Tensor):
             return {'pred': decoder_output,'region_pred':region_pred}
         else:
