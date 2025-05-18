@@ -296,137 +296,94 @@ class Seq2SeqSpanMetric(MetricBase):
 
     def evaluate(self, target_span, pred, tgt_tokens, region_pred,region_label,cover_flag,predict_mode = False):
        
-        # region_pred is expected to be (batch_size, generated_seq_len_incl_bos, top_k_regions)
-        # If top_k=1 and it was squeezed, its shape might be (batch_size, generated_seq_len_incl_bos)
-        if region_pred.ndim == 2:
-            # Assuming this 2D shape means top_k=1 and the last dimension was squeezed.
-            # Unsqueeze to make it (batch_size, generated_seq_len_incl_bos, 1)
-            region_pred = region_pred.unsqueeze(-1)
-        
-        # Now, region_pred should be 3D.
-        # The slice [:,1:,:] removes the BOS token's associated region predictions and works on the rest.
-        # If region_pred was (bsz, L, K), this slice makes it (bsz, L-1, K)
-        region_pred_list = region_pred[:,1:,:].tolist() # MODIFIED FROM: region_pred = region_pred[:,1:,:].tolist()
-        
+        region_pred = region_pred[:,1:,:].tolist()
         bbox_num = region_label.size(-1) -1  ## -1维度的最后一个item 0/1 表示 是否有region
 
         self.total += pred.size(0)
         pred_eos_index = pred.flip(dims=[1]).eq(self.eos_token_id).cumsum(dim=1).long()
         target_eos_index = tgt_tokens.flip(dims=[1]).eq(self.eos_token_id).cumsum(dim=1).long()
 
-        pred = pred[:, 1:]  # 去掉</s> (BOS is token 0, EOS is token 1 or 2 for BART)
+        pred = pred[:, 1:]  # 去掉</s>
         tgt_tokens = tgt_tokens[:, 1:]
         pred_seq_len = pred_eos_index.flip(dims=[1]).eq(pred_eos_index[:, -1:]).sum(dim=1) # bsz
-        pred_seq_len = (pred_seq_len - 2).tolist() # Assuming BOS and one generated token before EOS at minimum. Adjust if BOS is not part of `pred`.
+        pred_seq_len = (pred_seq_len - 2).tolist()
         target_seq_len = target_eos_index.flip(dims=[1]).eq(target_eos_index[:, -1:]).sum(dim=1) # bsz
         target_seq_len = (target_seq_len-2).tolist()
-        
+        # pred_spans = []
         batch_pred_pairs =[]
         batch_target_pairs =[]
         for i, (ts, ps) in enumerate(zip(target_span, pred.tolist())):
-            if not isinstance(ts,list):
+            if not isinstance(ts,list):  ####!!! 有的过来是array 有的过来是list
                 ts= ts.tolist()
             em = 0
-            # ps (predicted sequence) is already sliced to remove BOS if pred = pred[:,1:] was done correctly
-            # So, ps_len should be compared with pred_seq_len[i] without further slicing ps
-            current_pred_len = min(len(ps), pred_seq_len[i]) # ensure k is within bounds of actual generated part of ps
-            ps_slice_for_eval = ps[:current_pred_len]
-
-            if current_pred_len == target_seq_len[i]: # Compare lengths of actual content
-                if target_seq_len[i] > 0 : # Avoid comparing empty sequences if target_seq_len can be 0
-                    em = int(tgt_tokens[i, :target_seq_len[i]].eq(pred[i, :current_pred_len]).sum().item()==target_seq_len[i])
+            ps = ps[:pred_seq_len[i]]
+            if pred_seq_len[i]==target_seq_len[i]:
+                em = int(tgt_tokens[i, :target_seq_len[i]].eq(pred[i, :target_seq_len[i]]).sum().item()==target_seq_len[i])
             self.em += em
-            
             all_pairs = {}
             cur_pair = []
-            if len(ps_slice_for_eval): # Use the length-adjusted slice
+            if len(ps):
                 k = 0
-                # Iterate up to len(ps_slice_for_eval) - 2 to ensure ps[k+1] is valid
-                while k < len(ps_slice_for_eval)-1: # Adjusted loop condition
-                    # Ensure ps_slice_for_eval[k+1] is accessible if ps_slice_for_eval[k] is a class
-                    if k + 1 >= len(ps_slice_for_eval) and ps_slice_for_eval[k] < self.word_start_index:
-                        break # Not enough tokens left for class + type
-
-                    if ps_slice_for_eval[k]<self.word_start_index: # 是类别预测
-                        if len(cur_pair) > 0:
-                            #升序判断
-                            is_ascending = True
-                            if len(cur_pair)>1: # only check if more than one element
-                                is_ascending = all([cur_pair[idx]<cur_pair[idx+1] for idx in range(len(cur_pair)-1)])
-
-                            if is_ascending:
-                                # Ensure k is a valid index for region_pred_list[i]
-                                if k < len(region_pred_list[i]):
-                                    current_region_pred = region_pred_list[i][k]
-                                else: # Should not happen if lengths are aligned
-                                    current_region_pred = [[bbox_num]] # Default to no region if index out of bounds
-
-                                if ps_slice_for_eval[k] == 2: # '<<which region>>'
-                                    all_pairs[tuple(cur_pair)] = [current_region_pred,[ps_slice_for_eval[k+1]]]
-                                elif ps_slice_for_eval[k] == 3: # '<<no region>>'
-                                    all_pairs[tuple(cur_pair)] = [[bbox_num],[ps_slice_for_eval[k+1]]]
+                while k < len(ps)-2:
+                    if ps[k]<self.word_start_index: # 是类别预测
+                        if len(cur_pair) > 0:  # 之前有index 预测，且为升序，则添加pair
+                            if all([cur_pair[i]<cur_pair[i+1] for i in range(len(cur_pair)-1)]):
+                                
+                                if ps[k] == 2:
+                                    all_pairs[tuple(cur_pair)] = [region_pred[i][k],[ps[k+1]]]  ## 相关
+                                elif ps[k] == 3:
+                                    all_pairs[tuple(cur_pair)] = [[bbox_num],[ps[k+1]]]   ## 不相关
                                 else:
-                                    print(f"region relation error! Token ID: {ps_slice_for_eval[k]}")
+                                    print("region relation error!")
                         cur_pair = []
-                        k = k+2 
-                    else: 
-                        cur_pair.append(ps_slice_for_eval[k])
+                        k = k+2
+                    else: # 记录当前 pair 的index 预测
+                        cur_pair.append(ps[k])
                         k= k+1
-                # After loop, handle any remaining cur_pair for the last token if it's an index
-                # This part might be tricky if the sequence ends with an index without its class/type
-                # The original code structure seems to imply pairs are (indices, class, type)
-                # A standalone index at the end might not form a complete pair.
-                # The `while k < len(ps)-2` (now `while k < len(ps_slice_for_eval)-1`)
-                # already ensures that if `ps[k]` is a class, `ps[k+1]` (type) is available.
-                # If the loop finishes and `cur_pair` has content, it means the sequence ended with indices.
-                # The original code for this part:
-                # if len(cur_pair) > 0:
-                #     if all([cur_pair[i]<cur_pair[i+1] for i in range(len(cur_pair)-1)]):
-                #         if ps[k] == 2: # ps[k] here would be out of bounds if k reached len(ps)-1 or len(ps)
-                #             all_pairs[tuple(cur_pair)] = [region_pred[i][k],[ps[k+1]]]
-                #         ...
-                # This part of the original logic needs careful review. If k is the index *after* the last element
-                # of cur_pair, then ps[k] for class and ps[k+1] for type would be needed.
-                # The loop `while k < len(ps_slice_for_eval)-1` means `k` can at most be `len-2`.
-                # `ps_slice_for_eval[k]` and `ps_slice_for_eval[k+1]` are valid.
-                # If the loop finishes, `k` would be `len-1` or `len`.
-                # The original "after loop" code seems to have an issue with `ps[k]` if `k` is not properly managed.
-                # For simplicity, we'll assume pairs are fully formed within the loop.
+                if len(cur_pair) > 0:
+                    if all([cur_pair[i]<cur_pair[i+1] for i in range(len(cur_pair)-1)]):
+                        
+                        if ps[k] == 2:
+                            all_pairs[tuple(cur_pair)] = [region_pred[i][k],[ps[k+1]]]  ## 相关
+                        elif ps[k] == 3:
+                            all_pairs[tuple(cur_pair)] = [[bbox_num],[ps[k+1]]]   ## 不相关
+                        else:
+                            print("region relation error!")
 
+           
             all_ts = {}
-            for e_idx in range(len(ts)):
-                # ... (rest of target processing is likely fine) ...
-                if cover_flag[i][e_idx] == 0: 
+           
+            for e in range(len(ts)):  ## i -> sample ,e -> entity
+               
+                if cover_flag[i][e] == 0: ## not cover
                     true_region =[bbox_num+1]
-                elif cover_flag[i][e_idx] == 2: 
-                    if region_label[i][e_idx][-1] == 1 : 
+                elif cover_flag[i][e] == 2: ## 不相关
+                    if region_label[i][e][-1] == 1 : ## no region
                         true_region = [bbox_num]
                     else:
-                        # import pdb;pdb.set_trace() # Original debug point
-                        true_region = [bbox_num] # Fallback
-                elif cover_flag[i][e_idx] == 1:  
-                    if region_label[i][e_idx][-1] == 0 :
-                        # Get non-zero indices for true regions
-                        true_region_indices = region_label[i][e_idx][:-1].nonzero() # Remove the last flag element
-                        if true_region_indices.numel() > 0:
-                             true_region = true_region_indices.squeeze(1).tolist()
-                        else: # No specific region has >0 IoU, but it's related. This case might need clarification.
-                             true_region = [] # Or handle as per expected logic
+                        import pdb;pdb.set_trace()
+                elif cover_flag[i][e] == 1:  ## 相关
+                    if region_label[i][e][-1] == 0 :
+                        true_region = region_label[i][e].nonzero().squeeze(1).tolist()
                     else:
-                        # import pdb;pdb.set_trace() # Original debug point
-                        true_region = [] # Fallback
+                        import pdb;pdb.set_trace()
                 
-                text_span = ts[e_idx][:-2] # Assuming last two are region_relation_id and entity_type_id
-                entity_type = ts[e_idx][-1]
+                text_span = ts[e][:-2]
+                entity_type = ts[e][-1]
                
                 all_ts[tuple(text_span)] = [true_region,[entity_type]]
+
+            
+         
 
             tp,fp,fn,uc, nc, tc, sc = _compute_tp_fn_fp(all_pairs, all_ts,self.region_num)
             if self.print_mode:
                 print("all_pairs: "+str(all_pairs))
                 print("all_ts: "+str(all_ts))
                 print('tp: %d fp: %d  fn: %d'%(tp,fp,fn))
-
+            
+            
+            
             self.tp += tp
             self.fp += fp
             self.fn += fn
