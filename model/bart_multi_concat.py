@@ -449,22 +449,34 @@ class CaGFBartDecoder(FBartDecoder):
         eos_scores = F.linear(hidden_state, self.dropout_layer(embed_tokens_weight_for_eos))
         tag_scores = F.linear(hidden_state, self.dropout_layer(embed_tokens_weight_for_tags))
 
-        # Initialize image-related outputs
-        img_logits = None
-        src_img_outputs = None
-        input_img_embed = None
-        
-        if not text_only or img_feat_ is None:
-            src_outputs = state.encoder_output[:,self.box_num:,:]  
-            src_img_outputs = state.encoder_output[:,:self.box_num,:]
-            input_img_embed = self.dropout_layer(img_feat_)  # bsz, box_num, hidden_size
+         # Initialize features derived from encoder and raw image input
+        src_img_outputs = None  # Encoded image features part
+        input_img_embed = None  # Processed raw image features (img_feat_)
 
-            if hasattr(self, 'encoder_mlp'):
-                src_img_outputs = self.encoder_mlp(src_img_outputs)
-        else:
+        if text_only:
+            # In text_only mode, the entire encoder_output is considered text features.
+            # img_feat_ is expected to be None, and we don't process it.
             src_outputs = state.encoder_output
+            # src_img_outputs remains None
+            # input_img_embed remains None
+        else:
+            # In multimodal mode (not text_only)
+            # Split the encoder_output from the multimodal encoder
+            src_outputs = state.encoder_output[:, self.box_num:, :]       # Text part
+            src_img_outputs = state.encoder_output[:, :self.box_num, :]   # Image part
+
+            # Process raw projected image features (img_feat_) if they were provided
+            if img_feat_ is not None:
+                input_img_embed = self.dropout_layer(img_feat_)
+            # else: input_img_embed remains None if img_feat_ was None (e.g. optional raw features)
+
+            # Apply MLP to the encoded image features part if MLP exists and features are present
+            if hasattr(self, 'encoder_mlp') and self.encoder_mlp is not None and src_img_outputs is not None:
+                src_img_outputs = self.encoder_mlp(src_img_outputs)
         
-        if hasattr(self, 'encoder_mlp') and self.encoder_mlp is not None:
+        # Apply MLP to the encoded text features part if MLP exists and features are present
+        # This applies to src_outputs whether it came from text_only or multimodal path.
+        if hasattr(self, 'encoder_mlp') and self.encoder_mlp is not None and src_outputs is not None:
             src_outputs = self.encoder_mlp(src_outputs)
         
         
