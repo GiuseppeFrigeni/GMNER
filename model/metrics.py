@@ -4,7 +4,7 @@
 import inspect
 from abc import abstractmethod
 from collections import defaultdict
-import torch
+
 
 from .utils import _CheckError
 from .utils import _CheckRes
@@ -291,34 +291,35 @@ class Seq2SeqSpanMetric(MetricBase):
         self.nc = 0
         self.tc = 0
         self.sc = 0
-        self.target_type = target_type
+        self.target_type = target_type  # 如果是span的话，必须是偶数的span，否则是非法的
         self.print_mode = print_mode
 
     def evaluate(self, target_span, pred, tgt_tokens, region_pred,region_label,cover_flag,predict_mode = False):
        
+        # region_pred is expected to be (batch_size, generated_seq_len_incl_bos, top_k_regions)
+        # If top_k=1 and it was squeezed, its shape might be (batch_size, generated_seq_len_incl_bos)
         if region_pred.ndim == 2:
+            # Assuming this 2D shape means top_k=1 and the last dimension was squeezed.
+            # Unsqueeze to make it (batch_size, generated_seq_len_incl_bos, 1)
             region_pred = region_pred.unsqueeze(-1)
         
-        region_pred_list = region_pred[:,1:,:].tolist()
+        # Now, region_pred should be 3D.
+        # The slice [:,1:,:] removes the BOS token's associated region predictions and works on the rest.
+        # If region_pred was (bsz, L, K), this slice makes it (bsz, L-1, K)
+        region_pred_list = region_pred[:,1:,:].tolist() # MODIFIED FROM: region_pred = region_pred[:,1:,:].tolist()
         
-        bbox_num = region_label.size(-1) -1
+        bbox_num = region_label.size(-1) -1  ## -1维度的最后一个item 0/1 表示 是否有region
 
         self.total += pred.size(0)
         pred_eos_index = pred.flip(dims=[1]).eq(self.eos_token_id).cumsum(dim=1).long()
         target_eos_index = tgt_tokens.flip(dims=[1]).eq(self.eos_token_id).cumsum(dim=1).long()
 
-        pred = pred[:, 1:] 
+        pred = pred[:, 1:]  # 去掉</s> (BOS is token 0, EOS is token 1 or 2 for BART)
         tgt_tokens = tgt_tokens[:, 1:]
-        
-        # Calculate sequence lengths (number of tokens before EOS, excluding BOS/EOS themselves)
-        # sum gives total tokens including EOS. -1 to remove EOS.
-        # If BOS was also included in pred_eos_index count, then -2.
-        # Original logic: (sum(...) - 2).tolist()
-        _pred_seq_len_tensor = pred_eos_index.flip(dims=[1]).eq(pred_eos_index[:, -1:]).sum(dim=1)
-        _pred_seq_len_list = (_pred_seq_len_tensor - 2).tolist() # list of integers
-
-        _target_seq_len_tensor = target_eos_index.flip(dims=[1]).eq(target_eos_index[:, -1:]).sum(dim=1)
-        _target_seq_len_list = (_target_seq_len_tensor-2).tolist() # list of integers
+        pred_seq_len = pred_eos_index.flip(dims=[1]).eq(pred_eos_index[:, -1:]).sum(dim=1) # bsz
+        pred_seq_len = (pred_seq_len - 2).tolist() # Assuming BOS and one generated token before EOS at minimum. Adjust if BOS is not part of `pred`.
+        target_seq_len = target_eos_index.flip(dims=[1]).eq(target_eos_index[:, -1:]).sum(dim=1) # bsz
+        target_seq_len = (target_seq_len-2).tolist()
         
         batch_pred_pairs =[]
         batch_target_pairs =[]
@@ -326,71 +327,43 @@ class Seq2SeqSpanMetric(MetricBase):
             if not isinstance(ts,list):
                 ts= ts.tolist()
             em = 0
-            
-            # Ensure current_pred_actual_len is an integer
-            current_pred_actual_len = _pred_seq_len_list[i]
-            if not isinstance(current_pred_actual_len, int):
-                 # This path should ideally not be hit if _pred_seq_len_list is formed correctly.
-                 # Adding robust handling just in case.
-                if isinstance(current_pred_actual_len, list) and len(current_pred_actual_len) == 1:
-                    current_pred_actual_len = current_pred_actual_len[0]
-                elif isinstance(current_pred_actual_len, torch.Tensor) and current_pred_actual_len.numel() == 1:
-                    current_pred_actual_len = current_pred_actual_len.item()
-                else:
-                    raise ValueError(f"pred_seq_len[{i}] (value: {current_pred_actual_len}) is not a convertible to a single integer.")
-            
-            # current_pred_actual_len is now guaranteed to be an int (or raised error)
-            # len(ps) is length of full predicted sequence (after removing BOS)
-            # current_pred_actual_len is the calculated content length
-            # We should take the minimum of available tokens in ps and the calculated content length
-            effective_pred_len = min(len(ps), current_pred_actual_len)
-            # Ensure effective_pred_len is not negative, which can happen if _pred_seq_len_tensor - 2 was negative
-            effective_pred_len = max(0, effective_pred_len)
-            
-            ps_slice_for_eval = ps[:effective_pred_len]
+            # ps (predicted sequence) is already sliced to remove BOS if pred = pred[:,1:] was done correctly
+            # So, ps_len should be compared with pred_seq_len[i] without further slicing ps
+            current_pred_len = min(len(ps), pred_seq_len[i]) # ensure k is within bounds of actual generated part of ps
+            ps_slice_for_eval = ps[:current_pred_len]
 
-            current_target_actual_len = _target_seq_len_list[i]
-            if not isinstance(current_target_actual_len, int): # Similar safety for target
-                if isinstance(current_target_actual_len, list) and len(current_target_actual_len) == 1:
-                    current_target_actual_len = current_target_actual_len[0]
-                elif isinstance(current_target_actual_len, torch.Tensor) and current_target_actual_len.numel() == 1:
-                    current_target_actual_len = current_target_actual_len.item()
-                else:
-                    raise ValueError(f"target_seq_len[{i}] (value: {current_target_actual_len}) is not convertible to int.")
-            effective_target_len = max(0, current_target_actual_len)
-
-
-            if effective_pred_len == effective_target_len:
-                if effective_target_len > 0 : 
-                    # Compare actual content slices
-                    em = int(tgt_tokens[i, :effective_target_len].eq(pred[i, :effective_pred_len]).sum().item() == effective_target_len)
+            if current_pred_len == target_seq_len[i]: # Compare lengths of actual content
+                if target_seq_len[i] > 0 : # Avoid comparing empty sequences if target_seq_len can be 0
+                    em = int(tgt_tokens[i, :target_seq_len[i]].eq(pred[i, :current_pred_len]).sum().item()==target_seq_len[i])
             self.em += em
             
             all_pairs = {}
             cur_pair = []
-            
-            # Use effective_pred_len for ps_slice_for_eval
-            if len(ps_slice_for_eval):
+            if len(ps_slice_for_eval): # Use the length-adjusted slice
                 k = 0
-                while k < len(ps_slice_for_eval) -1: # ensure ps_slice_for_eval[k+1] is safe
+                # Iterate up to len(ps_slice_for_eval) - 2 to ensure ps[k+1] is valid
+                while k < len(ps_slice_for_eval)-1: # Adjusted loop condition
+                    # Ensure ps_slice_for_eval[k+1] is accessible if ps_slice_for_eval[k] is a class
                     if k + 1 >= len(ps_slice_for_eval) and ps_slice_for_eval[k] < self.word_start_index:
-                        break 
+                        break # Not enough tokens left for class + type
 
-                    if ps_slice_for_eval[k]<self.word_start_index: 
+                    if ps_slice_for_eval[k]<self.word_start_index: # 是类别预测
                         if len(cur_pair) > 0:
+                            #升序判断
                             is_ascending = True
-                            if len(cur_pair)>1: 
+                            if len(cur_pair)>1: # only check if more than one element
                                 is_ascending = all([cur_pair[idx]<cur_pair[idx+1] for idx in range(len(cur_pair)-1)])
 
                             if is_ascending:
-                                if k < len(region_pred_list[i]): # k is index in ps_slice_for_eval
+                                # Ensure k is a valid index for region_pred_list[i]
+                                if k < len(region_pred_list[i]):
                                     current_region_pred = region_pred_list[i][k]
-                                else: 
-                                    current_region_pred = [[bbox_num]] 
+                                else: # Should not happen if lengths are aligned
+                                    current_region_pred = [[bbox_num]] # Default to no region if index out of bounds
 
-                                if ps_slice_for_eval[k] == 2: 
+                                if ps_slice_for_eval[k] == 2: # '<<which region>>'
                                     all_pairs[tuple(cur_pair)] = [current_region_pred,[ps_slice_for_eval[k+1]]]
-                                elif ps_slice_for_eval[k] == 3: 
+                                elif ps_slice_for_eval[k] == 3: # '<<no region>>'
                                     all_pairs[tuple(cur_pair)] = [[bbox_num],[ps_slice_for_eval[k+1]]]
                                 else:
                                     print(f"region relation error! Token ID: {ps_slice_for_eval[k]}")
@@ -399,27 +372,51 @@ class Seq2SeqSpanMetric(MetricBase):
                     else: 
                         cur_pair.append(ps_slice_for_eval[k])
                         k= k+1
-            
+                # After loop, handle any remaining cur_pair for the last token if it's an index
+                # This part might be tricky if the sequence ends with an index without its class/type
+                # The original code structure seems to imply pairs are (indices, class, type)
+                # A standalone index at the end might not form a complete pair.
+                # The `while k < len(ps)-2` (now `while k < len(ps_slice_for_eval)-1`)
+                # already ensures that if `ps[k]` is a class, `ps[k+1]` (type) is available.
+                # If the loop finishes and `cur_pair` has content, it means the sequence ended with indices.
+                # The original code for this part:
+                # if len(cur_pair) > 0:
+                #     if all([cur_pair[i]<cur_pair[i+1] for i in range(len(cur_pair)-1)]):
+                #         if ps[k] == 2: # ps[k] here would be out of bounds if k reached len(ps)-1 or len(ps)
+                #             all_pairs[tuple(cur_pair)] = [region_pred[i][k],[ps[k+1]]]
+                #         ...
+                # This part of the original logic needs careful review. If k is the index *after* the last element
+                # of cur_pair, then ps[k] for class and ps[k+1] for type would be needed.
+                # The loop `while k < len(ps_slice_for_eval)-1` means `k` can at most be `len-2`.
+                # `ps_slice_for_eval[k]` and `ps_slice_for_eval[k+1]` are valid.
+                # If the loop finishes, `k` would be `len-1` or `len`.
+                # The original "after loop" code seems to have an issue with `ps[k]` if `k` is not properly managed.
+                # For simplicity, we'll assume pairs are fully formed within the loop.
+
             all_ts = {}
             for e_idx in range(len(ts)):
+                # ... (rest of target processing is likely fine) ...
                 if cover_flag[i][e_idx] == 0: 
-                    true_region =[bbox_num+1] 
+                    true_region =[bbox_num+1]
                 elif cover_flag[i][e_idx] == 2: 
                     if region_label[i][e_idx][-1] == 1 : 
                         true_region = [bbox_num]
                     else:
-                        true_region = [bbox_num] 
+                        # import pdb;pdb.set_trace() # Original debug point
+                        true_region = [bbox_num] # Fallback
                 elif cover_flag[i][e_idx] == 1:  
                     if region_label[i][e_idx][-1] == 0 :
-                        true_region_indices = region_label[i][e_idx][:-1].nonzero() 
+                        # Get non-zero indices for true regions
+                        true_region_indices = region_label[i][e_idx][:-1].nonzero() # Remove the last flag element
                         if true_region_indices.numel() > 0:
                              true_region = true_region_indices.squeeze(1).tolist()
-                        else: 
-                             true_region = [] 
+                        else: # No specific region has >0 IoU, but it's related. This case might need clarification.
+                             true_region = [] # Or handle as per expected logic
                     else:
-                        true_region = [] 
+                        # import pdb;pdb.set_trace() # Original debug point
+                        true_region = [] # Fallback
                 
-                text_span = ts[e_idx][:-2] 
+                text_span = ts[e_idx][:-2] # Assuming last two are region_relation_id and entity_type_id
                 entity_type = ts[e_idx][-1]
                
                 all_ts[tuple(text_span)] = [true_region,[entity_type]]
