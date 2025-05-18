@@ -22,7 +22,7 @@ from model.generater_multi_concat import SequenceGeneratorModel
 from model.metrics import Seq2SeqSpanMetric 
 from model.losses import get_loss
 
-import fitlog
+#import fitlog
 import datetime
 #from fastNLP import Trainer
 
@@ -42,12 +42,12 @@ from model.utils import _move_dict_value_to_device
 #from fastNLP.core.utils import _move_dict_value_to_device
 #import random
 
-fitlog.debug()
+#fitlog.debug()
 
 # Enable anomaly detection to find the operation that causes NaNs
 #torch.autograd.set_detect_anomaly(True)
 
-fitlog.set_log_dir('logs')
+#fitlog.set_log_dir('logs')
 
 
 
