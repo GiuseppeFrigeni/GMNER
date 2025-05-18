@@ -454,7 +454,7 @@ class CaGFBartDecoder(FBartDecoder):
         src_img_outputs = None
         input_img_embed = None
         
-        if not text_only:
+        if not text_only or img_feat_ is None:
             src_outputs = state.encoder_output[:,self.box_num:,:]  
             src_img_outputs = state.encoder_output[:,:self.box_num,:]
             input_img_embed = self.dropout_layer(img_feat_)  # bsz, box_num, hidden_size
