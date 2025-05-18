@@ -228,7 +228,7 @@ class Seq2SeqModel(nn.Module):
         raise NotImplementedError("A `Seq2SeqModel` must implement its own classmethod `build_model()`.")
 
 
-def mask_image(image_feature):
+def mask_iamge(image_feature):
     mask = image_feature.sum(dim=-1).gt(0)
     return mask
 
@@ -238,19 +238,16 @@ class FBartEncoder(Seq2SeqEncoder):
         assert isinstance(encoder, BartEncoder)
         self.bart_encoder = encoder
 
-    def forward(self, src_tokens, image_feature, src_seq_len, text_only=False):
+    def forward(self, src_tokens, image_feature, src_seq_len):
         mask = seq_len_to_mask(src_seq_len, max_len=src_tokens.size(1))
-        image_mask = mask_image(image_feature)    
+        image_mask = mask_iamge(image_feature)    
 
         img_feat_, dict_encoder_output = self.bart_encoder(input_ids=src_tokens, image_feature=image_feature, attention_mask=mask, image_mask = image_mask, return_dict=True,
-                                 output_hidden_states=True, text_only=text_only)  # last_hidden_state: tensor(bsz, max_len, 768),  hidden_states: tuple((baz, max_len, 768)),  attentions
+                                 output_hidden_states=True)  # last_hidden_state: tensor(bsz, max_len, 768),  hidden_states: tuple((baz, max_len, 768)),  attentions
         encoder_outputs = dict_encoder_output.last_hidden_state
         if torch.isnan(encoder_outputs).any() or torch.isinf(encoder_outputs).any():
             print(f"DEBUG FBartEncoder: encoder_outputs (dict.last_hidden_state) CONTAINS NaN/Inf!")
         hidden_states = dict_encoder_output.hidden_states
-        if text_only:
-            return None, encoder_outputs, mask, hidden_states
-        
         multi_modal_mask = torch.cat((image_mask,mask),dim=-1)
         return img_feat_, encoder_outputs, multi_modal_mask, hidden_states
 
@@ -374,9 +371,11 @@ class CaGFBartDecoder(FBartDecoder):
                                              nn.Dropout(0.3),
                                              nn.ReLU(),
                                              nn.Linear(hidden_size,self.box_num))
-
         
-    def forward(self, img_feat_, tokens, state, text_only=False):  
+        # Define a stable fill value
+        self.STABLE_FILL_VALUE = -10000.0 # Or -1e5, adjust if needed
+        
+    def forward(self, img_feat_, tokens, state):  
         
         bsz, max_len = tokens.size()
         encoder_outputs = state.encoder_output  
@@ -444,25 +443,16 @@ class CaGFBartDecoder(FBartDecoder):
 
         eos_scores = F.linear(hidden_state, self.dropout_layer(embed_tokens_weight_for_eos))
         tag_scores = F.linear(hidden_state, self.dropout_layer(embed_tokens_weight_for_tags))
-
-        # Initialize image-related outputs
-        img_logits = None
-        src_img_outputs = None
-        input_img_embed = None
         
-        if not text_only:
-            src_outputs = state.encoder_output[:,self.box_num:,:]  
-            src_img_outputs = state.encoder_output[:,:self.box_num,:]
-            input_img_embed = self.dropout_layer(img_feat_)  # bsz, box_num, hidden_size
+       
+        src_outputs = state.encoder_output[:,self.box_num:,:]  
+        src_img_outputs = state.encoder_output[:,:self.box_num,:]
 
-            if hasattr(self, 'encoder_mlp'):
-                src_img_outputs = self.encoder_mlp(src_img_outputs)
-        else:
-            src_outputs = state.encoder_output
-        
-        if hasattr(self, 'encoder_mlp') and self.encoder_mlp is not None:
+        if hasattr(self, 'encoder_mlp'):
+            src_outputs_before_mlp = src_outputs
+            src_img_outputs_before_mlp = src_img_outputs
             src_outputs = self.encoder_mlp(src_outputs)
-        
+            src_img_outputs = self.encoder_mlp(src_img_outputs)
         
         if first is not None:
             mask = first.eq(0)  # bsz x 1 x max_word_len 
@@ -473,26 +463,25 @@ class CaGFBartDecoder(FBartDecoder):
         mask = mask.unsqueeze(1)
 
         input_embed = self.dropout_layer(self.decoder.embed_tokens(src_tokens))  # bsz x max_word_len x hidden_size
-
+        input_img_embed = self.dropout_layer(img_feat_)  # bsz, box_num, hidden_size
+        
+    
+        word_scores_einsum_inputs_hs = hidden_state
+        word_scores_einsum_inputs_so = src_outputs 
+        img_scores_einsum_inputs_sio = src_img_outputs 
 
 
         if self.avg_feature:  # 先把feature合并一下
-            src_outputs = (src_outputs + input_embed)/2
-            if src_img_outputs is not None and input_img_embed is not None:
-                src_img_outputs = (src_img_outputs + input_img_embed) /2
+            src_outputs = (src_outputs + input_embed)/2   
+            src_img_outputs = (src_img_outputs + input_img_embed) /2
 
-        word_scores = torch.einsum('blh,bnh->bln', hidden_state, src_outputs)
-        if src_img_outputs is not None:
-            img_scores = torch.einsum('blh,bnh->bln', hidden_state, src_img_outputs)
-        else:
-            img_scores = None
-
+        word_scores = torch.einsum('blh,bnh->bln', hidden_state, src_outputs) 
+        img_scores = torch.einsum('blh,bnh->bln', hidden_state, src_img_outputs)
         if not self.avg_feature:
             gen_scores = torch.einsum('blh,bnh->bln', hidden_state, input_embed)  
             word_scores = (gen_scores + word_scores)/2
-            if input_img_embed is not None and img_scores is not None:
-                gen_img_scores = torch.einsum('blh,bnh->bln', hidden_state, input_img_embed)  
-                img_scores = (gen_img_scores + img_scores)/2
+            gen_img_scores = torch.einsum('blh,bnh->bln', hidden_state, input_img_embed)  
+            img_scores = (gen_img_scores + img_scores)/2
         
         mask = mask.__or__(src_tokens.eq(2).cumsum(dim=1).ge(1).unsqueeze(1))  # 2 是结束符
         word_scores = word_scores.masked_fill(mask, -1e32)  
@@ -502,18 +491,14 @@ class CaGFBartDecoder(FBartDecoder):
         logits[:, :, self.src_start_index:] = word_scores   # logits: (bsz, target, 类别数 + max_len)
        
         if self.training:
+
             region_ind = target[:,:-1].eq(2)   ## bsz, max_len
-            if img_scores is not None:
-                img_logits = img_scores[region_ind]  ## ??, box_num
-            else:
-                img_logits = None
+            img_logits = img_scores[region_ind]  ## ??, box_num
             return logits, img_logits   ## logits:(bsz, target_len, n_class+max_len)  region_pred:(bsz, ??, max_box+1 )
         else:  
+            
             logits = logits[:,-1,:] ## logits:(bsz, n_class+max_len)
-            if img_scores is not None:
-                img_logits = img_scores[:,-1,:]
-            else:
-                img_logits = None
+            img_logits = img_scores[:,-1,:]
             return logits, img_logits
 
 
@@ -580,16 +565,14 @@ class BartSeq2SeqModel(Seq2SeqModel):
 
         return cls(encoder=encoder, decoder=decoder)
 
-    def prepare_state(self, src_tokens, image_feature, src_seq_len=None, first=None, tgt_seq_len=None, text_only=False):
-        if text_only:
-            image_feature = None
-        img_feat_, encoder_outputs, encoder_mask, hidden_states = self.encoder(src_tokens,image_feature, src_seq_len, text_only=text_only)
+    def prepare_state(self, src_tokens, image_feature,src_seq_len=None, first=None, tgt_seq_len=None):
+        img_feat_, encoder_outputs, encoder_mask, hidden_states = self.encoder(src_tokens,image_feature, src_seq_len)
         src_embed_outputs = hidden_states[0]
         state = BartState(encoder_outputs, encoder_mask, src_tokens, first, src_embed_outputs)
         # BartState 包括: src_tokens, first, src_embed_outputs
         return img_feat_, state
 
-    def forward(self, src_tokens,image_feature, tgt_tokens, src_seq_len, tgt_seq_len, first, text_only=False):
+    def forward(self, src_tokens,image_feature, tgt_tokens, src_seq_len, tgt_seq_len, first):
         """
 
         :param torch.LongTensor src_tokens: source的token
@@ -600,7 +583,7 @@ class BartSeq2SeqModel(Seq2SeqModel):
         :return: {'pred': torch.Tensor}, 其中pred的shape为bsz x max_len x vocab_size
         """
         
-        img_feat_, state = self.prepare_state(src_tokens, image_feature,src_seq_len, first, tgt_seq_len, text_only=text_only)
+        img_feat_, state = self.prepare_state(src_tokens, image_feature,src_seq_len, first, tgt_seq_len)
         decoder_output, region_pred = self.decoder(img_feat_, tgt_tokens, state)  # (bsz, max_target, 95) # 95, 每个预测的token上分 max_len+类别数 类
         if isinstance(decoder_output, torch.Tensor):
             return {'pred': decoder_output,'region_pred':region_pred}
