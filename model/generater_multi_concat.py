@@ -209,7 +209,7 @@ def greedy_generate(decoder, tokens=None, state=None,img_feat_=None, max_length=
 
     return token_ids, region_ids
 
-
+@torch.no_grad()
 def _no_beam_search_generate(decoder: Seq2SeqDecoder, state, img_feat_=None,tokens=None, max_length=20, max_len_a=0.0, bos_token_id=None,
                              eos_token_id=None,
                              repetition_penalty=1.0, length_penalty=1.0, pad_token_id=0,
@@ -233,25 +233,29 @@ def _no_beam_search_generate(decoder: Seq2SeqDecoder, state, img_feat_=None,toke
     else:
         _eos_token_id = eos_token_id
 
-    region_ids = torch.full([batch_size, 1, top_k], fill_value=bos_token_id, dtype=torch.long).to(device)
-
-    scores, region_scores = decoder.decode(img_feat_= img_feat_, tokens=tokens, state=state) ## return logits
+    #region_ids = torch.full([batch_size, 1, top_k], fill_value=bos_token_id, dtype=torch.long).to(device)
+    #scores, region_scores = decoder.decode(img_feat_= img_feat_, tokens=tokens, state=state) ## return logits
     
+    collected_region_probs = []
+    text_token_logits, current_region_logits = decoder.decode(img_feat_= img_feat_, tokens=tokens, state=state)
+
     if restricter is not None:
         _, next_tokens = restricter(state, tokens, scores, num_beams=1)
     else:
         next_tokens = scores.argmax(dim=-1, keepdim=True)
 
     ###
-    region_scores = torch.softmax(region_scores,dim=-1)
-    next_region_conf, next_regions = region_scores.topk(k= top_k, dim= -1, largest= True)
-    none = torch.full(next_regions.size(), fill_value=region_scores.size(-1), dtype=torch.long).to(device)
-    next_regions = torch.where(next_region_conf < region_threshold, none,next_regions)
+    #region_scores = torch.softmax(region_scores,dim=-1)
+    #next_region_conf, next_regions = region_scores.topk(k= top_k, dim= -1, largest= True)
+    #none = torch.full(next_regions.size(), fill_value=region_scores.size(-1), dtype=torch.long).to(device)
+    #next_regions = torch.where(next_region_conf < region_threshold, none,next_regions)
     
-    region_ids = torch.cat([region_ids,next_regions.unsqueeze(1)],dim= 1)
-
-
+    #region_ids = torch.cat([region_ids,next_regions.unsqueeze(1)],dim= 1)
     
+    
+    current_region_probs = torch.softmax(current_region_logits, dim=-1)
+    collected_region_probs.append(current_region_probs.unsqueeze(1))
+
 
     token_ids = torch.cat([tokens, next_tokens], dim=1)
     cur_len = token_ids.size(1)
@@ -294,12 +298,16 @@ def _no_beam_search_generate(decoder: Seq2SeqDecoder, state, img_feat_=None,toke
             next_tokens = scores.argmax(dim=-1, keepdim=True)
         next_tokens = next_tokens.squeeze(-1)
 
-        region_scores = torch.softmax(region_scores,dim=-1)
-        next_region_conf, next_regions = region_scores.topk(k= top_k, dim= -1, largest= True)
-        none = torch.full(next_regions.size(), fill_value=region_scores.size(-1), dtype=torch.long).to(device)
-        next_regions = torch.where(next_region_conf < region_threshold, none,next_regions)
+        #region_scores = torch.softmax(region_scores,dim=-1)
+        #next_region_conf, next_regions = region_scores.topk(k= top_k, dim= -1, largest= True)
+        #none = torch.full(next_regions.size(), fill_value=region_scores.size(-1), dtype=torch.long).to(device)
+        #next_regions = torch.where(next_region_conf < region_threshold, none,next_regions)
+
+        current_region_probs = torch.softmax(current_region_logits, dim=-1)
+        collected_region_probs.append(current_region_probs.unsqueeze(1))
+
     
-        region_ids = torch.cat([region_ids,next_regions.unsqueeze(1)],dim= 1)
+        #region_ids = torch.cat([region_ids,next_regions.unsqueeze(1)],dim= 1)
         # 如果已经达到对应的sequence长度了，就直接填为eos了
         if _eos_token_id!=-1:
             next_tokens = next_tokens.masked_fill(max_lengths.eq(cur_len+1), _eos_token_id)
@@ -316,8 +324,10 @@ def _no_beam_search_generate(decoder: Seq2SeqDecoder, state, img_feat_=None,toke
 
         if dones.min() == 1:
             break
+    
+    final_region_probs = torch.cat(collected_region_probs, dim=1)
 
-    return token_ids,region_ids
+    return token_ids, final_region_probs
 
 
 def _beam_search_generate(decoder: Seq2SeqDecoder, tokens=None, state=None, max_length=20, max_len_a=0.0, num_beams=4,
