@@ -334,7 +334,8 @@ class Seq2SeqSpanMetric(MetricBase):
                                 elif ps[k] == 3:
                                     all_pairs[tuple(cur_pair)] = [[bbox_num],[ps[k+1]]]   ## 不相关
                                 else:
-                                    print("region relation error!")
+                                    if self.print_mode:
+                                        print("region relation error!")
                         cur_pair = []
                         k = k+2
                     else: # 记录当前 pair 的index 预测
@@ -348,7 +349,8 @@ class Seq2SeqSpanMetric(MetricBase):
                         elif ps[k] == 3:
                             all_pairs[tuple(cur_pair)] = [[bbox_num],[ps[k+1]]]   ## 不相关
                         else:
-                            print("region relation error!")
+                            if self.print_mode:
+                                print("region relation error!")
 
            
             all_ts = {}
