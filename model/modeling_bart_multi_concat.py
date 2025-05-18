@@ -330,9 +330,7 @@ class BartEncoder(nn.Module):
         self.layer_norm = LayerNorm(config.d_model) if config.add_final_layer_norm else None
 
     
-    def forward(
-            self, input_ids, image_feature, attention_mask=None,image_mask =None, output_attentions=False, output_hidden_states=False, return_dict=False
-    ):
+    def forward(self, input_ids, image_feature, attention_mask=None,image_mask =None, output_attentions=False, output_hidden_states=False, return_dict=False, text_only=False):
         """
         Args:
             input_ids (LongTensor): tokens in the source language of shape
@@ -355,30 +353,23 @@ class BartEncoder(nn.Module):
             attention_mask = invert_mask(attention_mask)
         
         inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale
-
-
         embed_pos = self.embed_positions(input_ids)
-
         x = inputs_embeds + embed_pos
-
-
         x = self.layernorm_embedding(x)
-
-
         x = F.dropout(x, p=self.dropout, training=self.training)
 
-        
-        ############## 拼接图像 添加掩码
-        # import pdb;pdb.set_trace()
-        img_feat_raw = self.img_proj(image_feature)
+        if not text_only:
+            ############## 拼接图像 添加掩码
+            # import pdb;pdb.set_trace()
+            img_feat_raw = self.img_proj(image_feature)
 
-        # img_feat = self.layernorm_image_feature(img_feat)
-        img_feat = F.dropout(img_feat_raw, p=self.dropout, training=self.training)
-        x = torch.cat((img_feat,x),dim=1)
+            # img_feat = self.layernorm_image_feature(img_feat)
+            img_feat = F.dropout(img_feat_raw, p=self.dropout, training=self.training)
+            x = torch.cat((img_feat,x),dim=1)
 
 
-        attention_mask =torch.cat((image_mask,attention_mask),dim=-1)
-        ###################
+            attention_mask =torch.cat((image_mask,attention_mask),dim=-1)
+            ###################
 
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
@@ -387,8 +378,6 @@ class BartEncoder(nn.Module):
         all_attentions = () if output_attentions else None
 
         for idx, encoder_layer_module in enumerate(self.layers):
-
-
             if output_hidden_states:
                 encoder_states.append(x)
             # add LayerDrop (see https://arxiv.org/abs/1909.11556 for description)
