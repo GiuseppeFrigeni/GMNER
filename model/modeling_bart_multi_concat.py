@@ -716,6 +716,8 @@ class Attention(nn.Module):
         self.cache_key = "encoder_decoder" if self.encoder_decoder_attention else "self"
 
         self.dequant_q_proj = torch.ao.quantization.DeQuantStub()
+        self.dequant_v_proj = torch.ao.quantization.DeQuantStub()
+        self.dequant_k_proj = torch.ao.quantization.DeQuantStub()
 
     def _shape(self, tensor, seq_len, bsz):
         return tensor.contiguous().view(seq_len, bsz * self.num_heads, self.head_dim).transpose(0, 1)
@@ -757,6 +759,9 @@ class Attention(nn.Module):
             k = self.k_proj(query)
             v = self.v_proj(query)
 
+        k = self.dequant_k_proj(k)
+        v = self.dequant_v_proj(v)
+        
         q = self._shape(q, tgt_len, bsz)
         if k is not None:
             k = self._shape(k, -1, bsz)
