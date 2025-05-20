@@ -1,4 +1,5 @@
 import torch
+import torch.ao.quantization
 from .modeling_bart_multi_concat import BartEncoder, BartDecoder, BartModel
 from transformers import BartTokenizer
 from .utils import seq_len_to_mask
@@ -238,10 +239,13 @@ class FBartEncoder(Seq2SeqEncoder):
         assert isinstance(encoder, BartEncoder)
         self.bart_encoder = encoder
 
+        self.dequant_for_mask_image = torch.ao.quantization.DeQuantStub()
+
     def forward(self, src_tokens, image_feature, src_seq_len, text_only=False):
         mask = seq_len_to_mask(src_seq_len, max_len=src_tokens.size(1))
         if not text_only:
-            image_mask = mask_image(image_feature)
+            image_feature_fp32_for_mask = self.dequant_for_mask_image(image_feature)
+            image_mask = mask_image(image_feature_fp32_for_mask)
         else:
             image_mask = None    
 
