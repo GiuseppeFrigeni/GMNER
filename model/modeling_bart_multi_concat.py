@@ -715,7 +715,6 @@ class Attention(nn.Module):
         self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
         self.cache_key = "encoder_decoder" if self.encoder_decoder_attention else "self"
 
-        self.quant_q_proj = torch.ao.quantization.QuantStub()
         self.dequant_q_proj = torch.ao.quantization.DeQuantStub()
 
     def _shape(self, tensor, seq_len, bsz):
@@ -747,7 +746,6 @@ class Attention(nn.Module):
 
         q = self.dequant_q_proj(self.q_proj(query))
         q = q * self.scaling
-        q = self.quant_q_proj(q)
         
         if static_kv:
             if key is None:
