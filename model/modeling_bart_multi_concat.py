@@ -22,6 +22,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.ao.quantization
+from torch.ao.nn.quantized import FloatFunctional 
 from torch import Tensor, nn
 from torch.nn import CrossEntropyLoss
 
@@ -255,8 +256,8 @@ class EncoderLayer(nn.Module):
 
         self.quant_after_attn = torch.ao.quantization.QuantStub() # If attn expects Q input
 
-        self.ffn_add_func = torch.ao.quantization.FloatFunctional() # For residual add in FFN
-        self.attn_add_func = torch.ao.quantization.FloatFunctional() # For residual add after attention
+        self.ffn_add_func = FloatFunctional() # For residual add in FFN
+        self.attn_add_func = FloatFunctional() # For residual add after attention
 
         self.quant_before_fc1 = torch.ao.quantization.QuantStub()
         self.dequant_after_fc2_for_residual = torch.ao.quantization.DeQuantStub()
