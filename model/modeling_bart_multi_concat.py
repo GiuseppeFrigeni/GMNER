@@ -812,7 +812,7 @@ class Attention(nn.Module):
         assert attn_output.size() == (bsz * self.num_heads, tgt_len, self.head_dim)
         attn_output = attn_output.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
         #output of bmm is 32fp so we need to quantize it
-        attn_output = self.quant_before_out_proj(self.out_proj(attn_output))
+        attn_output = self.quant_before_out_proj(attn_output)
         attn_output = self.out_proj(attn_output)
         if output_attentions:
             attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
