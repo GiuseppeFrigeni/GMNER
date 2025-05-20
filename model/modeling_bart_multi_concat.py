@@ -21,6 +21,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import torch
 import torch.nn.functional as F
+import torch.ao.quantization
 from torch import Tensor, nn
 from torch.nn import CrossEntropyLoss
 
@@ -329,6 +330,7 @@ class BartEncoder(nn.Module):
         # mbart has one extra layer_norm
         self.layer_norm = LayerNorm(config.d_model) if config.add_final_layer_norm else None
 
+        self.quant_text_path_before_cat = torch.ao.quantization.QuantStub()
     
     def forward(self, input_ids, image_feature, attention_mask=None,image_mask =None, output_attentions=False, output_hidden_states=False, return_dict=False, text_only=False):
         """
@@ -367,6 +369,7 @@ class BartEncoder(nn.Module):
 
             # img_feat = self.layernorm_image_feature(img_feat)
             img_feat = F.dropout(img_feat_raw, p=self.dropout, training=self.training)
+            x = self.quant_text_path_before_cat(x)
             x = torch.cat((img_feat,x),dim=1)
 
 
