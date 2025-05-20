@@ -719,6 +719,8 @@ class Attention(nn.Module):
         self.dequant_v_proj = torch.ao.quantization.DeQuantStub()
         self.dequant_k_proj = torch.ao.quantization.DeQuantStub()
 
+        self.quant_before_out_proj = torch.ao.quantization.QuantStub()
+
     def _shape(self, tensor, seq_len, bsz):
         return tensor.contiguous().view(seq_len, bsz * self.num_heads, self.head_dim).transpose(0, 1)
 
@@ -761,7 +763,7 @@ class Attention(nn.Module):
 
         k = self.dequant_k_proj(k)
         v = self.dequant_v_proj(v)
-        
+
         q = self._shape(q, tgt_len, bsz)
         if k is not None:
             k = self._shape(k, -1, bsz)
@@ -809,6 +811,8 @@ class Attention(nn.Module):
         attn_output = torch.bmm(attn_probs, v)
         assert attn_output.size() == (bsz * self.num_heads, tgt_len, self.head_dim)
         attn_output = attn_output.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
+        #output of bmm is 32fp so we need to quantize it
+        attn_output = self.quant_before_out_proj(self.out_proj(attn_output))
         attn_output = self.out_proj(attn_output)
         if output_attentions:
             attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
