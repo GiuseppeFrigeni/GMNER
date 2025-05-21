@@ -254,7 +254,7 @@ class EncoderLayer(nn.Module):
         self.fc2 = nn.Linear(config.encoder_ffn_dim, self.embed_dim)
         self.final_layer_norm = LayerNorm(self.embed_dim)
 
-        self.quant_after_attn = torch.ao.quantization.QuantStub() # If attn expects Q input
+        self.dequant_after_add = torch.ao.quantization.DeQuantStub() # If attn expects Q input
 
         self.ffn_add_func = FloatFunctional() # For residual add in FFN
         self.attn_add_func = FloatFunctional() # For residual add after attention
@@ -285,6 +285,8 @@ class EncoderLayer(nn.Module):
         x = F.dropout(x, p=self.dropout, training=self.training)
 
         x = self.attn_add_func.add(residual,x)
+        x = self.dequant_after_add(x)
+
         if not self.normalize_before:
             x = self.self_attn_layer_norm(x)
 
