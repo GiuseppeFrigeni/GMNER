@@ -490,11 +490,13 @@ class DecoderLayer(nn.Module):
         self.ffn_add_func = FloatFunctional() # For residual add in FFN
         self.attn_add_func = FloatFunctional() # For residual add after attention
 
+        self.dequant_after_add = torch.ao.quantization.DeQuantStub()
         self.quant_before_fc1 = torch.ao.quantization.QuantStub()
         self.dequant_after_fc2 = torch.ao.quantization.DeQuantStub()
         self.quant_output = torch.ao.quantization.QuantStub()
 
         self.quant_before_encoder_attn = torch.ao.quantization.QuantStub()
+        self.dequant_after_encoder_attn = torch.ao.quantization.DeQuantStub()
 
     def forward(
             self,
@@ -525,6 +527,7 @@ class DecoderLayer(nn.Module):
 
         x = F.dropout(x, p=self.dropout, training=self.training)
         x = self.attn_add_func.add(residual,x)
+        x = self.dequant_after_add(x)
         if not self.normalize_before:
             x = self.self_attn_layer_norm(x)
 
@@ -542,6 +545,7 @@ class DecoderLayer(nn.Module):
             layer_state=layer_state,  # mutates layer state
         )
         x = F.dropout(x, p=self.dropout, training=self.training)
+        x = self.dequant_after_encoder_attn(x)
         x = residual + x
         if not self.normalize_before:
             x = self.encoder_attn_layer_norm(x)
