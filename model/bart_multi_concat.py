@@ -382,6 +382,7 @@ class CaGFBartDecoder(FBartDecoder):
                                              nn.Linear(hidden_size,self.box_num))
 
         self.dequant_before_mm = torch.ao.quantization.DeQuantStub()
+        self.dequant_gather = torch.ao.quantization.DeQuantStub()
 
 
     def forward(self, img_feat_, tokens, state, text_only=False):  
@@ -484,7 +485,8 @@ class CaGFBartDecoder(FBartDecoder):
         # This applies to src_outputs whether it came from text_only or multimodal path.
         if hasattr(self, 'encoder_mlp') and self.encoder_mlp is not None and src_outputs is not None:
             src_outputs = self.encoder_mlp(src_outputs)
-        
+
+        src_outputs = self.dequant_gather(src_outputs) 
         
         if first is not None:
             mask = first.eq(0)  # bsz x 1 x max_word_len 
