@@ -260,7 +260,7 @@ class EncoderLayer(nn.Module):
         self.attn_add_func = FloatFunctional() # For residual add after attention
 
         self.quant_before_fc1 = torch.ao.quantization.QuantStub()
-        self.quant_after_fc2 = torch.ao.quantization.QuantStub()
+        self.dequant_after_fc2 = torch.ao.quantization.DeQuantStub()
 
         self.quant_output = torch.ao.quantization.QuantStub()
 
@@ -299,10 +299,11 @@ class EncoderLayer(nn.Module):
         x = F.dropout(x, p=self.activation_dropout, training=self.training)
         x = self.fc2(x)
         x = F.dropout(x, p=self.dropout, training=self.training)
-        residual = self.quant_after_fc2(residual)
-        x = self.ffn_add_func.add(residual, x)
+        x = self.dequant_after_fc2(x)
+        x = residual + x
         if not self.normalize_before:
             x = self.final_layer_norm(x)
+        x = self.quant_output(x)
         return x, attn_weights
 
 
