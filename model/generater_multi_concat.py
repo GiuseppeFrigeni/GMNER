@@ -86,7 +86,7 @@ class SequenceGeneratorModel(nn.Module):
         
         img_feat_, state = self.seq2seq_model.prepare_state(src_tokens, image_feature, src_seq_len, first, text_only=text_only)
         result,region_result = self.generator.generate(img_feat_, state, text_only=text_only)
-        return {'pred': result,'region_pred':region_result}
+        return result, region_result
 
 
 r"""
