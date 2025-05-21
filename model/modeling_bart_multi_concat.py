@@ -666,6 +666,8 @@ class BartDecoder(nn.Module):
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
         next_decoder_cache = []
+
+        x= self.quant_before_decoder(x)
         for idx, decoder_layer in enumerate(self.layers):
             # add LayerDrop (see https://arxiv.org/abs/1909.11556 for description)
             if output_hidden_states:
@@ -676,7 +678,7 @@ class BartDecoder(nn.Module):
 
             layer_state = past_key_values[idx] if past_key_values is not None else None
 
-            x= self.quant_before_decoder(x)
+            
             x, layer_self_attn, layer_past = decoder_layer(
                 x,
                 encoder_hidden_states,
