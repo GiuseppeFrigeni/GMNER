@@ -304,7 +304,7 @@ class EncoderLayer(nn.Module):
         if not self.normalize_before:
             x = self.final_layer_norm(x)
         x = self.quant_output(x)
-        
+
         return x, attn_weights
 
 
@@ -352,6 +352,7 @@ class BartEncoder(nn.Module):
         #self.quant_before_ln = torch.ao.quantization.QuantStub()
         self.quant_text_path_before_cat = torch.ao.quantization.QuantStub()
         self.dequant_before_isnan = torch.ao.quantization.DeQuantStub()
+        self.quant_end_encoder_layer = torch.ao.quantization.QuantStub()
     
     def forward(self, input_ids, image_feature, attention_mask=None,image_mask =None, output_attentions=False, output_hidden_states=False, return_dict=False, text_only=False):
         """
@@ -438,6 +439,8 @@ class BartEncoder(nn.Module):
                 return img_feat_raw, BaseModelOutput(last_hidden_state=x.transpose(0,1) if x is not None else None, hidden_states=None, attentions=None)
             if output_attentions:
                 all_attentions = all_attentions + (attn,)
+            
+            x = self.quant_end_encoder_layer(x)
 
         if self.layer_norm:
             x = self.layer_norm(x)
