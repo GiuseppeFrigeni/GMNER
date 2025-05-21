@@ -775,7 +775,7 @@ class Attention(nn.Module):
             saved_state = None
             layer_state = {}
 
-        query = self.quant_before_proj(query)
+        #query = self.quant_before_proj(query)
         q = self.dequant_q_proj(self.q_proj(query))
         q = q * self.scaling
         
