@@ -487,6 +487,15 @@ class DecoderLayer(nn.Module):
         self.fc2 = nn.Linear(config.decoder_ffn_dim, self.embed_dim)
         self.final_layer_norm = LayerNorm(self.embed_dim)
 
+        self.ffn_add_func = FloatFunctional() # For residual add in FFN
+        self.attn_add_func = FloatFunctional() # For residual add after attention
+
+        self.quant_before_fc1 = torch.ao.quantization.QuantStub()
+        self.dequant_after_fc2 = torch.ao.quantization.DeQuantStub()
+        self.quant_output = torch.ao.quantization.QuantStub()
+
+        self.quant_before_encoder_attn = torch.ao.quantization.QuantStub()
+
     def forward(
             self,
             x,
@@ -515,15 +524,17 @@ class DecoderLayer(nn.Module):
         )
 
         x = F.dropout(x, p=self.dropout, training=self.training)
-        x = residual + x
+        x = self.attn_add_func.add(residual,x)
         if not self.normalize_before:
             x = self.self_attn_layer_norm(x)
 
         # Cross attention
         residual = x
+        
         assert self.encoder_attn.cache_key != self.self_attn.cache_key
         if self.normalize_before:
             x = self.encoder_attn_layer_norm(x)
+        x = self.quant_before_encoder_attn(x)
         x, _ = self.encoder_attn(
             query=x,
             key=encoder_hidden_states,
@@ -538,13 +549,17 @@ class DecoderLayer(nn.Module):
         residual = x
         if self.normalize_before:
             x = self.final_layer_norm(x)
+        x = self.quant_before_fc1(x)
         x = self.activation_fn(self.fc1(x))
         x = F.dropout(x, p=self.activation_dropout, training=self.training)
         x = self.fc2(x)
         x = F.dropout(x, p=self.dropout, training=self.training)
+        x = self.dequant_after_fc2(x)
         x = residual + x
         if not self.normalize_before:
             x = self.final_layer_norm(x)
+
+        x = self.quant_output(x)
         return (
             x,
             self_attn_weights,
