@@ -304,6 +304,7 @@ class EncoderLayer(nn.Module):
         if not self.normalize_before:
             x = self.final_layer_norm(x)
         x = self.quant_output(x)
+        
         return x, attn_weights
 
 
@@ -737,6 +738,7 @@ class Attention(nn.Module):
         self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
         self.cache_key = "encoder_decoder" if self.encoder_decoder_attention else "self"
 
+        self.quant_before_proj = torch.ao.quantization.QuantStub()
         self.dequant_q_proj = torch.ao.quantization.DeQuantStub()
         self.dequant_v_proj = torch.ao.quantization.DeQuantStub()
         self.dequant_k_proj = torch.ao.quantization.DeQuantStub()
@@ -770,6 +772,7 @@ class Attention(nn.Module):
             saved_state = None
             layer_state = {}
 
+        query = self.quant_before_proj(query)
         q = self.dequant_q_proj(self.q_proj(query))
         q = q * self.scaling
         
