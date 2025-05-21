@@ -500,6 +500,7 @@ class CaGFBartDecoder(FBartDecoder):
         input_embed = self.dropout_layer(self.decoder.embed_tokens(src_tokens))  # bsz x max_word_len x hidden_size
 
         src_img_outputs = self.dequant_img_outputs(src_img_outputs) if src_img_outputs is not None else None
+        input_img_embed = self.dequant_img_outputs(input_img_embed) if input_img_embed is not None else None
 
         if self.avg_feature:  # 先把feature合并一下
             src_outputs = (src_outputs + input_embed)/2
