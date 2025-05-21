@@ -513,7 +513,6 @@ class DecoderLayer(nn.Module):
             attn_mask=causal_mask,
             output_attentions=output_attentions,
         )
-        if torch.isnan(x).any(): "DEBUG DecoderLayer FWD: x after self_attn has NaN!"
 
         x = F.dropout(x, p=self.dropout, training=self.training)
         x = residual + x
