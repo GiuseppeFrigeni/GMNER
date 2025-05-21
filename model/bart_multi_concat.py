@@ -440,7 +440,8 @@ class CaGFBartDecoder(FBartDecoder):
         if not self.training:
             state.past_key_values = dict_decoder_output.past_key_values
 
-        logits = hidden_state.new_full((hidden_state.size(0), hidden_state.size(1), self.src_start_index+src_tokens.size(-1)), fill_value=-1e24)   # (nsz, max_target， 54 + max_len)
+        logits_shape = (hidden_state.size(0), hidden_state.size(1), self.src_start_index + src_tokens.size(-1))
+        logits = hidden_state.new_full(logits_shape, fill_value=-1e24, dtype=torch.float32, device=hidden_state.device )   # (nsz, max_target， 54 + max_len)
         
         
         # --- Score Calculations ---
