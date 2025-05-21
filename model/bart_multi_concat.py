@@ -240,7 +240,6 @@ class FBartEncoder(Seq2SeqEncoder):
         self.bart_encoder = encoder
 
         self.dequant_for_mask_image = torch.ao.quantization.DeQuantStub()
-        self.dequant_before_mm = torch.ao.quantization.DeQuantStub()
 
     def forward(self, src_tokens, image_feature, src_seq_len, text_only=False):
         mask = seq_len_to_mask(src_seq_len, max_len=src_tokens.size(1))
@@ -382,7 +381,9 @@ class CaGFBartDecoder(FBartDecoder):
                                              nn.ReLU(),
                                              nn.Linear(hidden_size,self.box_num))
 
-        
+        self.dequant_before_mm = torch.ao.quantization.DeQuantStub()
+
+
     def forward(self, img_feat_, tokens, state, text_only=False):  
         
         bsz, max_len = tokens.size()
