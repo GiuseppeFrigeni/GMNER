@@ -589,6 +589,8 @@ class BartDecoder(nn.Module):
         self.layer_norm = LayerNorm(config.d_model) if config.add_final_layer_norm else None
         self.config = config
 
+        self.quant_before_decoder = torch.ao.quantization.QuantStub()
+
     def forward(
             self,
             input_ids,
@@ -674,6 +676,7 @@ class BartDecoder(nn.Module):
 
             layer_state = past_key_values[idx] if past_key_values is not None else None
 
+            x= self.quant_before_decoder(x)
             x, layer_self_attn, layer_past = decoder_layer(
                 x,
                 encoder_hidden_states,
