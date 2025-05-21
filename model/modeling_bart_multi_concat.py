@@ -812,8 +812,10 @@ class Attention(nn.Module):
             k = self.k_proj(query)
             v = self.v_proj(query)
 
-        k = self.dequant_k_proj(k)
-        v = self.dequant_v_proj(v)
+        if k is not None:
+            k = self.dequant_k_proj(k)
+        if v is not None:
+            v = self.dequant_v_proj(v)
 
         q = self._shape(q, tgt_len, bsz)
         if k is not None:
