@@ -350,6 +350,7 @@ class BartEncoder(nn.Module):
 
         #self.quant_before_ln = torch.ao.quantization.QuantStub()
         self.quant_text_path_before_cat = torch.ao.quantization.QuantStub()
+        self.dequant_before_isnan = torch.ao.quantization.DeQuantStub()
     
     def forward(self, input_ids, image_feature, attention_mask=None,image_mask =None, output_attentions=False, output_hidden_states=False, return_dict=False, text_only=False):
         """
@@ -411,6 +412,7 @@ class BartEncoder(nn.Module):
                 attn = None
             else:
                 x, attn = encoder_layer_module(x, attention_mask, output_attentions=output_attentions)
+                x = self.dequant_before_isnan(x)
                 if torch.isnan(x).any(): # This was your existing check for any batch
 
                     if output_hidden_states:
