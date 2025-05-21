@@ -297,7 +297,7 @@ class EncoderLayer(nn.Module):
         x = F.dropout(x, p=self.activation_dropout, training=self.training)
         x = self.fc2(x)
         x = F.dropout(x, p=self.dropout, training=self.training)
-        x = self.ffn_add_func(residual, x)
+        x = self.ffn_add_func.add(residual, x)
         if not self.normalize_before:
             x = self.final_layer_norm(x)
         return x, attn_weights
