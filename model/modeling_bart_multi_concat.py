@@ -345,8 +345,8 @@ class BartEncoder(nn.Module):
         # mbart has one extra layer_norm
         self.layer_norm = LayerNorm(config.d_model) if config.add_final_layer_norm else None
 
-        self.quant_before_ln = torch.ao.quantization.QuantStub()
-        #self.quant_text_path_before_cat = torch.ao.quantization.QuantStub()
+        #self.quant_before_ln = torch.ao.quantization.QuantStub()
+        self.quant_text_path_before_cat = torch.ao.quantization.QuantStub()
     
     def forward(self, input_ids, image_feature, attention_mask=None,image_mask =None, output_attentions=False, output_hidden_states=False, return_dict=False, text_only=False):
         """
@@ -373,7 +373,7 @@ class BartEncoder(nn.Module):
         inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale
         embed_pos = self.embed_positions(input_ids)
         x = inputs_embeds + embed_pos
-        x = self.quant_before_ln(x)
+        #x = self.quant_before_ln(x)
         x = self.layernorm_embedding(x)
         x = F.dropout(x, p=self.dropout, training=self.training)
 
@@ -386,7 +386,7 @@ class BartEncoder(nn.Module):
 
             # img_feat = self.layernorm_image_feature(img_feat)
             img_feat = F.dropout(img_feat_raw, p=self.dropout, training=self.training)
-            #x = self.quant_text_path_before_cat(x)
+            x = self.quant_text_path_before_cat(x)
             x = torch.cat((img_feat,x),dim=1)
 
 
