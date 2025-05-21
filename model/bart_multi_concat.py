@@ -424,7 +424,7 @@ class CaGFBartDecoder(FBartDecoder):
                                 return_dict=True)  # BaseModelOutputWithPast类，包括last_hidden_state, past_key_values, hidden_states, attentions
         else:
             past_key_values = state.past_key_values
-            
+            #try:
             dict_decoder_output = self.decoder(input_ids=tokens,
                                     encoder_hidden_states=encoder_outputs,
                                     encoder_padding_mask=encoder_pad_mask,
