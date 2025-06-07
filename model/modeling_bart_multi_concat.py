@@ -22,18 +22,18 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.ao.quantization
-from torch.ao.nn.quantized import FloatFunctional 
+from torch.ao.nn.quantized import FloatFunctional
 from torch import Tensor, nn
 from torch.nn import CrossEntropyLoss
 
-#from transformers.modeling_bart import * 
+#from transformers.modeling_bart import *
 #from transformers.models.bart.modeling_bart import *
 
 from transformers.activations import ACT2FN
 from transformers import PreTrainedModel, BartConfig
 from transformers.modeling_outputs import BaseModelOutput, BaseModelOutputWithPast, Seq2SeqModelOutput, Seq2SeqLMOutput, Seq2SeqSequenceClassifierOutput, Seq2SeqQuestionAnsweringModelOutput
 from transformers.utils import add_start_docstrings, add_code_sample_docstrings
-from transformers.utils import replace_return_docstrings, logging, add_end_docstrings 
+from transformers.utils import replace_return_docstrings, logging, add_end_docstrings
 
 
 
@@ -206,7 +206,7 @@ def _make_linear_from_emb(emb):
     lin_layer = nn.Linear(emb_size, vocab_size, bias=False,
                           dtype=emb.weight.dtype,  # Ensure lin_layer has the same dtype as emb
                           device=emb.weight.device) # Ensure lin_layer is on the same device as emb
-    
+
     # The weight of nn.Linear(in_features, out_features) has shape (out_features, in_features).
     # So, lin_layer.weight.shape is (vocab_size, emb_size).
     # This matches emb.weight.shape, which is also (vocab_size, emb_size).
@@ -254,15 +254,8 @@ class EncoderLayer(nn.Module):
         self.fc2 = nn.Linear(config.encoder_ffn_dim, self.embed_dim)
         self.final_layer_norm = LayerNorm(self.embed_dim)
 
-        self.dequant_after_add = torch.ao.quantization.DeQuantStub() # If attn expects Q input
-
         self.ffn_add_func = FloatFunctional() # For residual add in FFN
         self.attn_add_func = FloatFunctional() # For residual add after attention
-
-        self.quant_before_fc1 = torch.ao.quantization.QuantStub()
-        self.dequant_after_fc2 = torch.ao.quantization.DeQuantStub()
-
-        self.quant_output = torch.ao.quantization.QuantStub()
 
     def forward(self, x, encoder_padding_mask, output_attentions=False):
         """
@@ -285,25 +278,21 @@ class EncoderLayer(nn.Module):
         x = F.dropout(x, p=self.dropout, training=self.training)
 
         x = self.attn_add_func.add(residual,x)
-        x = self.dequant_after_add(x)
 
         if not self.normalize_before:
             x = self.self_attn_layer_norm(x)
-        
-        
+
+
         residual = x
         if self.normalize_before:
             x = self.final_layer_norm(x)
-        x = self.quant_before_fc1(x)
         x = self.activation_fn(self.fc1(x))
         x = F.dropout(x, p=self.activation_dropout, training=self.training)
         x = self.fc2(x)
         x = F.dropout(x, p=self.dropout, training=self.training)
-        x = self.dequant_after_fc2(x)
-        x = residual + x
+        x = self.ffn_add_func.add(residual, x)
         if not self.normalize_before:
             x = self.final_layer_norm(x)
-        x = self.quant_output(x)
 
         return x, attn_weights
 
@@ -341,7 +330,7 @@ class BartEncoder(nn.Module):
                 self.padding_idx,
                 extra_pos_embeddings_val,
             )
-        self.img_proj = nn.Linear(2048, config.d_model)  
+        self.img_proj = nn.Linear(2048, config.d_model)
 
         self.layers = nn.ModuleList([EncoderLayer(config) for _ in range(config.encoder_layers)])
         self.layernorm_embedding = LayerNorm(embed_dim) if config.normalize_embedding else nn.Identity()  # for x
@@ -349,17 +338,18 @@ class BartEncoder(nn.Module):
         # mbart has one extra layer_norm
         self.layer_norm = LayerNorm(config.d_model) if config.add_final_layer_norm else None
 
-        #self.quant_before_ln = torch.ao.quantization.QuantStub()
-        self.quant_text_path_before_cat = torch.ao.quantization.QuantStub()
-        self.dequant_before_isnan = torch.ao.quantization.DeQuantStub()
-        self.quant_end_encoder_layer = torch.ao.quantization.QuantStub()
-    
+        # This QuantStub defines the start of the quantized section of the model.
+        self.quant = torch.ao.quantization.QuantStub()
+        # This DeQuantStub will be used if text_only=True to dequantize the output.
+        self.dequant = torch.ao.quantization.DeQuantStub()
+
+
     def forward(self, input_ids, image_feature, attention_mask=None,image_mask =None, output_attentions=False, output_hidden_states=False, return_dict=False, text_only=False):
         """
         Args:
             input_ids (LongTensor): tokens in the source language of shape
                 `(batch, src_len)`
-            attention_mask (torch.LongTensor): indicating which indices are padding tokens.  ### 注意和bert不同 1. Bool 2. sentence 内是 False
+            attention_mask (torch.LongTensor): indicating which indices are padding tokens.
         Returns:
             BaseModelOutput or Tuple comprised of:
                 - **x** (Tensor): the last encoder layer's output of
@@ -371,33 +361,26 @@ class BartEncoder(nn.Module):
                 During training might not be of length n_layers because of layer dropout.
         """
 
-
         # check attention mask and invert
         if attention_mask is not None:
             attention_mask = invert_mask(attention_mask)
-        
+
         inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale
         embed_pos = self.embed_positions(input_ids)
         x = inputs_embeds + embed_pos
-        #x = self.quant_before_ln(x)
         x = self.layernorm_embedding(x)
         x = F.dropout(x, p=self.dropout, training=self.training)
 
         img_feat = None
 
         if not text_only:
-            ############## 拼接图像 添加掩码
-            # import pdb;pdb.set_trace()
             img_feat_raw = self.img_proj(image_feature)
-
-            # img_feat = self.layernorm_image_feature(img_feat)
             img_feat = F.dropout(img_feat_raw, p=self.dropout, training=self.training)
-            x = self.quant_text_path_before_cat(x)
             x = torch.cat((img_feat,x),dim=1)
-
-
             attention_mask =torch.cat((image_mask,attention_mask),dim=-1)
-            ###################
+        
+        # Quantize the combined input tensor. This is the start of our quantized region.
+        x = self.quant(x)
 
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
@@ -414,38 +397,28 @@ class BartEncoder(nn.Module):
                 attn = None
             else:
                 x, attn = encoder_layer_module(x, attention_mask, output_attentions=output_attentions)
-                x = self.dequant_before_isnan(x)
-                if torch.isnan(x).any(): # This was your existing check for any batch
-
+                if torch.isnan(x).any():
+                     # This check can be useful for debugging QAT.
                     if output_hidden_states:
-                         # Transpose collected states if they are T x B x C
                         encoder_states_tuple = tuple(hidden_state.transpose(0, 1) for hidden_state in encoder_states) if encoder_states else None
                     else:
                         encoder_states_tuple = None
-                    
                     nan_output_last_hidden_state = x.transpose(0, 1) if x is not None else None
-
                     if not return_dict:
-                        return img_feat_raw, BaseModelOutput(last_hidden_state=nan_output_last_hidden_state, 
-                                                             hidden_states=encoder_states_tuple, 
+                        return img_feat_raw, BaseModelOutput(last_hidden_state=nan_output_last_hidden_state,
+                                                             hidden_states=encoder_states_tuple,
                                                              attentions=all_attentions)
-
-
-            if torch.isnan(x).any():
-                # Return immediately if NaN is produced by a layer
-                # This helps pinpoint which layer is the culprit.
-                if not return_dict:
-                    return img_feat_raw, (x.transpose(0,1) if x is not None else None, None, None) # Crude early exit
-                return img_feat_raw, BaseModelOutput(last_hidden_state=x.transpose(0,1) if x is not None else None, hidden_states=None, attentions=None)
             if output_attentions:
                 all_attentions = all_attentions + (attn,)
-            
-            x = self.quant_end_encoder_layer(x)
 
         if self.layer_norm:
             x = self.layer_norm(x)
+        
+        # Dequantize the final output. The rest of the model (decoder) will handle its own quantization.
+        x = self.dequant(x)
 
         if output_hidden_states:
+            # Note: hidden states are not dequantized here, they remain in their intermediate format.
             encoder_states.append(x)
             # T x B x C -> B x T x C
             encoder_states = tuple(hidden_state.transpose(0, 1) for hidden_state in encoder_states)
@@ -453,11 +426,12 @@ class BartEncoder(nn.Module):
         # T x B x C -> B x T x C
         x = x.transpose(0, 1)
 
-
         if not return_dict:
-            return tuple(v for v in [x, encoder_states, all_attentions] if v is not None)
-        return img_feat, BaseModelOutput(last_hidden_state=x, hidden_states=encoder_states, attentions=all_attentions)
-    
+            return tuple(v for v in [img_feat_raw if not text_only else None,
+                                     BaseModelOutput(last_hidden_state=x, hidden_states=encoder_states, attentions=all_attentions)]
+                         if v is not None)
+
+        return (img_feat_raw if not text_only else None), BaseModelOutput(last_hidden_state=x, hidden_states=encoder_states, attentions=all_attentions)
 
 
 class DecoderLayer(nn.Module):
@@ -489,14 +463,7 @@ class DecoderLayer(nn.Module):
 
         self.ffn_add_func = FloatFunctional() # For residual add in FFN
         self.attn_add_func = FloatFunctional() # For residual add after attention
-
-        self.dequant_after_add = torch.ao.quantization.DeQuantStub()
-        self.quant_before_fc1 = torch.ao.quantization.QuantStub()
-        self.dequant_after_fc2 = torch.ao.quantization.DeQuantStub()
-        self.quant_output = torch.ao.quantization.QuantStub()
-
-        self.quant_before_encoder_attn = torch.ao.quantization.QuantStub()
-        self.dequant_after_encoder_attn = torch.ao.quantization.DeQuantStub()
+        self.cross_attn_add_func = FloatFunctional()
 
     def forward(
             self,
@@ -515,7 +482,6 @@ class DecoderLayer(nn.Module):
         if self.normalize_before:
             x = self.self_attn_layer_norm(x)
         # Self Attention
-
         x, self_attn_weights = self.self_attn(
             query=x,
             key=x,
@@ -527,17 +493,16 @@ class DecoderLayer(nn.Module):
 
         x = F.dropout(x, p=self.dropout, training=self.training)
         x = self.attn_add_func.add(residual,x)
-        x = self.dequant_after_add(x)
+
         if not self.normalize_before:
             x = self.self_attn_layer_norm(x)
 
         # Cross attention
         residual = x
-        
         assert self.encoder_attn.cache_key != self.self_attn.cache_key
         if self.normalize_before:
             x = self.encoder_attn_layer_norm(x)
-        x = self.quant_before_encoder_attn(x)
+
         x, _ = self.encoder_attn(
             query=x,
             key=encoder_hidden_states,
@@ -545,25 +510,23 @@ class DecoderLayer(nn.Module):
             layer_state=layer_state,  # mutates layer state
         )
         x = F.dropout(x, p=self.dropout, training=self.training)
-        x = self.dequant_after_encoder_attn(x)
-        x = residual + x
+        x = self.cross_attn_add_func.add(residual, x)
+
         if not self.normalize_before:
             x = self.encoder_attn_layer_norm(x)
+
         # Fully Connected
         residual = x
         if self.normalize_before:
             x = self.final_layer_norm(x)
-        x = self.quant_before_fc1(x)
         x = self.activation_fn(self.fc1(x))
         x = F.dropout(x, p=self.activation_dropout, training=self.training)
         x = self.fc2(x)
         x = F.dropout(x, p=self.dropout, training=self.training)
-        x = self.dequant_after_fc2(x)
-        x = residual + x
+        x = self.ffn_add_func.add(residual, x)
         if not self.normalize_before:
             x = self.final_layer_norm(x)
 
-        x = self.quant_output(x)
         return (
             x,
             self_attn_weights,
@@ -583,7 +546,7 @@ class BartDecoder(nn.Module):
         super().__init__()
         self.dropout = config.dropout
         self.layerdrop = config.decoder_layerdrop
-        self.do_blenderbot_90_layernorm = getattr(config, 'do_blenderbot_90_layernorm', False) 
+        self.do_blenderbot_90_layernorm = getattr(config, 'do_blenderbot_90_layernorm', False)
         self.padding_idx = embed_tokens.padding_idx
         self.max_target_positions = config.max_position_embeddings
         self.embed_scale = math.sqrt(config.d_model) if config.scale_embedding else 1.0
@@ -607,7 +570,9 @@ class BartDecoder(nn.Module):
         self.layer_norm = LayerNorm(config.d_model) if config.add_final_layer_norm else None
         self.config = config
 
-        self.quant_before_decoder = torch.ao.quantization.QuantStub()
+        self.quant = torch.ao.quantization.QuantStub()
+        self.dequant = torch.ao.quantization.DeQuantStub()
+
 
     def forward(
             self,
@@ -675,6 +640,10 @@ class BartDecoder(nn.Module):
             x = self.layernorm_embedding(x)
 
         x = F.dropout(x, p=self.dropout, training=self.training)
+        
+        # Quantize decoder input and encoder hidden states
+        x = self.quant(x)
+        encoder_hidden_states = self.quant(encoder_hidden_states)
 
         # Convert to Bart output format: (seq_len, BS, model_dim) -> (BS, seq_len, model_dim)
         x = x.transpose(0, 1)
@@ -685,7 +654,6 @@ class BartDecoder(nn.Module):
         all_self_attns = () if output_attentions else None
         next_decoder_cache = []
 
-        x= self.quant_before_decoder(x)
         for idx, decoder_layer in enumerate(self.layers):
             # add LayerDrop (see https://arxiv.org/abs/1909.11556 for description)
             if output_hidden_states:
@@ -696,7 +664,7 @@ class BartDecoder(nn.Module):
 
             layer_state = past_key_values[idx] if past_key_values is not None else None
 
-            
+
             x, layer_self_attn, layer_past = decoder_layer(
                 x,
                 encoder_hidden_states,
@@ -716,11 +684,14 @@ class BartDecoder(nn.Module):
         if self.layer_norm:  # if config.add_final_layer_norm (mBART)
             x = self.layer_norm(x)
 
+        # Dequantize final decoder output
+        x = self.dequant(x)
+
         # Convert to standard output format: (seq_len, BS, model_dim) -> (BS, seq_len, model_dim)
         if output_hidden_states:
-            all_hidden_states = tuple(hidden_state.transpose(0, 1) for hidden_state in all_hidden_states)
+            all_hidden_states = tuple(self.dequant(hidden_state.transpose(0, 1)) for hidden_state in all_hidden_states)
         x = x.transpose(0, 1)
-        encoder_hidden_states = encoder_hidden_states.transpose(0, 1)
+        encoder_hidden_states = self.dequant(encoder_hidden_states.transpose(0, 1))
 
         next_cache = next_decoder_cache if use_cache else None
 
@@ -763,13 +734,9 @@ class Attention(nn.Module):
         self.q_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
         self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
         self.cache_key = "encoder_decoder" if self.encoder_decoder_attention else "self"
+        
+        self.bmm = FloatFunctional()
 
-        self.quant_before_proj = torch.ao.quantization.QuantStub()
-        self.dequant_q_proj = torch.ao.quantization.DeQuantStub()
-        self.dequant_v_proj = torch.ao.quantization.DeQuantStub()
-        self.dequant_k_proj = torch.ao.quantization.DeQuantStub()
-
-        self.quant_before_out_proj = torch.ao.quantization.QuantStub()
 
     def _shape(self, tensor, seq_len, bsz):
         return tensor.contiguous().view(seq_len, bsz * self.num_heads, self.head_dim).transpose(0, 1)
@@ -798,9 +765,7 @@ class Attention(nn.Module):
             saved_state = None
             layer_state = {}
 
-        #query = self.quant_before_proj(query)
-        q = self.dequant_q_proj(self.q_proj(query))
-        q = q * self.scaling
+        q = self.q_proj(query) * self.scaling
         
         if static_kv:
             if key is None:
@@ -811,11 +776,6 @@ class Attention(nn.Module):
         else:
             k = self.k_proj(query)
             v = self.v_proj(query)
-
-        if k is not None:
-            k = self.dequant_k_proj(k)
-        if v is not None:
-            v = self.dequant_v_proj(v)
 
         q = self._shape(q, tgt_len, bsz)
         if k is not None:
@@ -833,7 +793,9 @@ class Attention(nn.Module):
 
         assert k is not None
         src_len = k.size(1)
-        attn_weights = torch.bmm(q, k.transpose(1, 2))
+        
+        attn_weights = self.bmm.mul(q, k.transpose(1, 2))
+        
         assert attn_weights.size() == (bsz * self.num_heads, tgt_len, src_len)
 
         if attn_mask is not None:
@@ -861,11 +823,9 @@ class Attention(nn.Module):
         )
 
         assert v is not None
-        attn_output = torch.bmm(attn_probs, v)
+        attn_output = self.bmm.mul(attn_probs, v)
         assert attn_output.size() == (bsz * self.num_heads, tgt_len, self.head_dim)
         attn_output = attn_output.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
-        #output of bmm is 32fp so we need to quantize it
-        attn_output = self.quant_before_out_proj(attn_output)
         attn_output = self.out_proj(attn_output)
         if output_attentions:
             attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
@@ -1042,26 +1002,31 @@ class BartModel(PretrainedBartModel):
 
         assert decoder_input_ids is not None
 
-        if encoder_outputs is None:      
+        if encoder_outputs is None:
             encoder_outputs = self.encoder(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
                 return_dict=return_dict,
+                # Pass kwargs to encoder, e.g., image_feature
+                **kwargs
             )
         # If the user passed a tuple for encoder_outputs, we wrap it in a BaseModelOuput when return_dict=False
         elif return_dict and not isinstance(encoder_outputs, BaseModelOutput):    # 如果自己传encoder output
-            encoder_outputs = BaseModelOutput(         
+            encoder_outputs = BaseModelOutput(
                 last_hidden_state=encoder_outputs[0],
                 hidden_states=encoder_outputs[1] if len(encoder_outputs) > 1 else None,
                 attentions=encoder_outputs[2] if len(encoder_outputs) > 2 else None,
-            )                                                       #! 进行何种处理？？
-        #import pdb;pdb.set_trace()
+            )
+        # The encoder now returns a tuple (img_feat_raw, BaseModelOutput)
+        # We need to unpack it correctly.
+        img_feat, encoder_outputs_model = encoder_outputs
+        
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         decoder_outputs = self.decoder(
             decoder_input_ids,
-            encoder_outputs[0],
+            encoder_outputs_model.last_hidden_state,
             attention_mask,
             decoder_padding_mask,
             decoder_causal_mask=causal_mask,
@@ -1073,16 +1038,19 @@ class BartModel(PretrainedBartModel):
         )
 
         if not return_dict:
-            return decoder_outputs + encoder_outputs
+            # When not returning a dict, we need to be careful about the format
+            # The original model returned decoder_outputs + encoder_outputs
+            # We'll stick to that, but use the unpacked encoder_outputs_model
+            return decoder_outputs + tuple(v for v in [encoder_outputs_model.last_hidden_state, encoder_outputs_model.hidden_states, encoder_outputs_model.attentions] if v is not None)
 
         return Seq2SeqModelOutput(
             last_hidden_state=decoder_outputs.last_hidden_state,
             past_key_values=decoder_outputs.past_key_values,
             decoder_hidden_states=decoder_outputs.hidden_states,
             decoder_attentions=decoder_outputs.attentions,
-            encoder_last_hidden_state=encoder_outputs.last_hidden_state,
-            encoder_hidden_states=encoder_outputs.hidden_states,
-            encoder_attentions=encoder_outputs.attentions,
+            encoder_last_hidden_state=encoder_outputs_model.last_hidden_state,
+            encoder_hidden_states=encoder_outputs_model.hidden_states,
+            encoder_attentions=encoder_outputs_model.attentions,
         )
 
     def get_input_embeddings(self):
@@ -1206,6 +1174,7 @@ class BartForConditionalGeneration(PretrainedBartModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            **unused, # Pass kwargs like image_feature to the underlying model
         )
         lm_logits = F.linear(outputs[0], self.model.shared.weight, bias=self.final_logits_bias)
 
@@ -1240,6 +1209,7 @@ class BartForConditionalGeneration(PretrainedBartModel):
             "decoder_input_ids": decoder_input_ids,
             "attention_mask": attention_mask,
             "use_cache": use_cache,  # change this to avoid caching (presumably for debugging)
+            **kwargs,
         }
 
     def adjust_logits_during_generation(self, logits, cur_len, max_length):
@@ -1307,6 +1277,7 @@ class BartForSequenceClassification(PretrainedBartModel):
             output_attentions=None,
             output_hidden_states=None,
             return_dict=None,
+            **kwargs,
     ):
         r"""
         labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size,)`, `optional`):
@@ -1328,6 +1299,7 @@ class BartForSequenceClassification(PretrainedBartModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            **kwargs,
         )
         x = outputs[0]  # last hidden state
         eos_mask = input_ids.eq(self.config.eos_token_id)
@@ -1394,6 +1366,7 @@ class BartForQuestionAnswering(PretrainedBartModel):
             output_attentions=None,
             output_hidden_states=None,
             return_dict=None,
+            **kwargs,
     ):
         r"""
         start_positions (:obj:`torch.LongTensor` of shape :obj:`(batch_size,)`, `optional`):
@@ -1419,6 +1392,7 @@ class BartForQuestionAnswering(PretrainedBartModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            **kwargs,
         )
 
         sequence_output = outputs[0]
