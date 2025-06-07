@@ -350,6 +350,7 @@ class BartEncoder(nn.Module):
         self.layer_norm = LayerNorm(config.d_model) if config.add_final_layer_norm else None
 
         #self.quant_before_ln = torch.ao.quantization.QuantStub()
+        self.quant_image_feature = torch.ao.quantization.QuantStub()
         self.quant_text_path_before_cat = torch.ao.quantization.QuantStub()
         self.dequant_before_isnan = torch.ao.quantization.DeQuantStub()
         self.quant_end_encoder_layer = torch.ao.quantization.QuantStub()
@@ -388,6 +389,7 @@ class BartEncoder(nn.Module):
         if not text_only:
             ############## 拼接图像 添加掩码
             # import pdb;pdb.set_trace()
+            image_feature = self.quant_image_feature(image_feature)
             img_feat_raw = self.img_proj(image_feature)
 
             # img_feat = self.layernorm_image_feature(img_feat)
