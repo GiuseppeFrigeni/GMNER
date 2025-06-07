@@ -735,8 +735,15 @@ class Attention(nn.Module):
         self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
         self.cache_key = "encoder_decoder" if self.encoder_decoder_attention else "self"
         
-        self.bmm = FloatFunctional()
+        self.quant_q = torch.ao.quantization.QuantStub()
+        self.quant_k = torch.ao.quantization.QuantStub()
+        self.quant_v = torch.ao.quantization.QuantStub()
+        self.dequant_q = torch.ao.quantization.DeQuantStub()
+        self.dequant_k = torch.ao.quantization.DeQuantStub()
+        self.dequant_v = torch.ao.quantization.DeQuantStub()
 
+        self.quant_attn_output = torch.ao.quantization.QuantStub()  
+        self.dequant_attn_probs = torch.ao.quantization.DeQuantStub()
 
     def _shape(self, tensor, seq_len, bsz):
         return tensor.contiguous().view(seq_len, bsz * self.num_heads, self.head_dim).transpose(0, 1)
@@ -794,7 +801,7 @@ class Attention(nn.Module):
         assert k is not None
         src_len = k.size(1)
         
-        attn_weights = self.bmm.mul(q, k.transpose(1, 2))
+        attn_weights = torch.bmm(q, k.transpose(1, 2))
         
         assert attn_weights.size() == (bsz * self.num_heads, tgt_len, src_len)
 
@@ -823,7 +830,7 @@ class Attention(nn.Module):
         )
 
         assert v is not None
-        attn_output = self.bmm.mul(attn_probs, v)
+        attn_output = torch.bmm(attn_probs, v)
         assert attn_output.size() == (bsz * self.num_heads, tgt_len, self.head_dim)
         attn_output = attn_output.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
         attn_output = self.out_proj(attn_output)
