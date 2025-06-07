@@ -539,7 +539,8 @@ class CaGFBartDecoder(FBartDecoder):
             if img_scores is not None:
                 img_logits = img_scores[:,-1,:]
             else:
-                img_logits = None
+                batch_size = hidden_state.size(0)
+                img_logits = hidden_state.new_full((batch_size, self.box_num), fill_value=-1e24)
             return logits, img_logits
 
 
