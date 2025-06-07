@@ -735,15 +735,11 @@ class Attention(nn.Module):
         self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
         self.cache_key = "encoder_decoder" if self.encoder_decoder_attention else "self"
         
-        self.quant_q = torch.ao.quantization.QuantStub()
-        self.quant_k = torch.ao.quantization.QuantStub()
-        self.quant_v = torch.ao.quantization.QuantStub()
-        self.dequant_q = torch.ao.quantization.DeQuantStub()
-        self.dequant_k = torch.ao.quantization.DeQuantStub()
-        self.dequant_v = torch.ao.quantization.DeQuantStub()
-
-        self.quant_attn_output = torch.ao.quantization.QuantStub()  
-        self.dequant_attn_probs = torch.ao.quantization.DeQuantStub()
+        # Stubs to control data type for sensitive operations
+        self.dequant_stub1 = torch.ao.quantization.DeQuantStub()
+        self.dequant_stub2 = torch.ao.quantization.DeQuantStub()
+        self.dequant_stub3 = torch.ao.quantization.DeQuantStub()
+        self.quant_stub = torch.ao.quantization.QuantStub()
 
     def _shape(self, tensor, seq_len, bsz):
         return tensor.contiguous().view(seq_len, bsz * self.num_heads, self.head_dim).transpose(0, 1)
@@ -800,29 +796,34 @@ class Attention(nn.Module):
 
         assert k is not None
         src_len = k.size(1)
-        
+
+        # --- START OF THE CRITICAL FIX ---
+        # Dequantize inputs to bmm before the operation
+        q = self.dequant_stub1(q)
+        k = self.dequant_stub2(k)
+
         attn_weights = torch.bmm(q, k.transpose(1, 2))
-        
+        # --- END OF THE CRITICAL FIX ---
+
         assert attn_weights.size() == (bsz * self.num_heads, tgt_len, src_len)
 
         if attn_mask is not None:
             attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len) + attn_mask
             attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
 
-        # This is part of a workaround to get around fork/join parallelism not supporting Optional types.
         if key_padding_mask is not None and key_padding_mask.dim() == 0:
             key_padding_mask = None
-        assert key_padding_mask is None or key_padding_mask.size()[:2] == (
-            bsz,
-            src_len,
-        )
+        assert key_padding_mask is None or key_padding_mask.size()[:2] == (bsz, src_len)
 
-        if key_padding_mask is not None:  # don't attend to padding symbols
+        if key_padding_mask is not None:
             attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
             reshaped = key_padding_mask.unsqueeze(1).unsqueeze(2)
             attn_weights = attn_weights.masked_fill(reshaped, float("-inf"))
             attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
+        
+        # Softmax is always done in float
         attn_weights = F.softmax(attn_weights, dim=-1)
+        
         attn_probs = F.dropout(
             attn_weights,
             p=self.dropout,
@@ -830,14 +831,28 @@ class Attention(nn.Module):
         )
 
         assert v is not None
+        
+        # --- START OF THE CRITICAL FIX ---
+        # Dequantize v before the second bmm
+        v = self.dequant_stub3(v)
         attn_output = torch.bmm(attn_probs, v)
+        # --- END OF THE CRITICAL FIX ---
+        
         assert attn_output.size() == (bsz * self.num_heads, tgt_len, self.head_dim)
         attn_output = attn_output.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
+        
+        # --- START OF THE CRITICAL FIX ---
+        # Re-quantize the output before it's passed to the next layer (out_proj)
+        attn_output = self.quant_stub(attn_output)
+        # --- END OF THE CRITICAL FIX ---
+        
         attn_output = self.out_proj(attn_output)
+        
         if output_attentions:
             attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
         else:
             attn_weights = None
+            
         return attn_output, attn_weights
 
     def _use_saved_state(self, k, v, saved_state, key_padding_mask, static_kv, bsz):
