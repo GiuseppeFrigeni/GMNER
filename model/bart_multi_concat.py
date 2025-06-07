@@ -458,60 +458,66 @@ class CaGFBartDecoder(FBartDecoder):
         tag_scores = F.linear(hidden_state, self.dropout_layer(embed_tokens_weight_for_tags))
 
          # Initialize features derived from encoder and raw image input
-        src_img_outputs = None  # Encoded image features part
-        input_img_embed = None  # Processed raw image features (img_feat_)
+        # This ensures all subsequent operations (slicing, MLP, etc.) are in float32.
+        encoder_outputs_fp32 = self.dequant_gather(state.encoder_output)
+        
+        src_img_outputs = None
+        input_img_embed = None
 
         if text_only:
-            # In text_only mode, the entire encoder_output is considered text features.
-            # img_feat_ is expected to be None, and we don't process it.
-            src_outputs = state.encoder_output
-            # src_img_outputs remains None
-            # input_img_embed remains None
+            # If text only, all encoder outputs are text features.
+            src_outputs = encoder_outputs_fp32
         else:
-            # In multimodal mode (not text_only)
-            # Split the encoder_output from the multimodal encoder
-            src_outputs = state.encoder_output[:, self.box_num:, :]       # Text part
-            src_img_outputs = state.encoder_output[:, :self.box_num, :]   # Image part
+            # If multimodal, split the float32 tensor.
+            src_outputs = encoder_outputs_fp32[:, self.box_num:, :]
+            src_img_outputs = encoder_outputs_fp32[:, :self.box_num, :]
 
-            # Process raw projected image features (img_feat_) if they were provided
+            # Process raw projected image features if provided
             if img_feat_ is not None:
-                input_img_embed = self.dropout_layer(img_feat_)
-            # else: input_img_embed remains None if img_feat_ was None (e.g. optional raw features)
+                # Dequantize img_feat_ as well before use
+                img_feat_fp32 = self.dequant_img_outputs(img_feat_)
+                input_img_embed = self.dropout_layer(img_feat_fp32)
 
-            # Apply MLP to the encoded image features part if MLP exists and features are present
-            if hasattr(self, 'encoder_mlp') and self.encoder_mlp is not None and src_img_outputs is not None:
+            # Apply MLP to the image features part
+            if hasattr(self, 'encoder_mlp') and self.encoder_mlp is not None:
                 src_img_outputs = self.encoder_mlp(src_img_outputs)
-        
-        # Apply MLP to the encoded text features part if MLP exists and features are present
-        # This applies to src_outputs whether it came from text_only or multimodal path.
-        if hasattr(self, 'encoder_mlp') and self.encoder_mlp is not None and src_outputs is not None:
-            src_outputs = self.encoder_mlp(src_outputs)
 
-        src_outputs = self.dequant_gather(src_outputs) 
+        # Apply MLP to the text features part
+        if hasattr(self, 'encoder_mlp') and self.encoder_mlp is not None:
+            src_outputs = self.encoder_mlp(src_outputs)
+        
+        # Now, all features (src_outputs, src_img_outputs, input_img_embed) are float32
         
         if first is not None:
-            mask = first.eq(0)  # bsz x 1 x max_word_len 
-            src_outputs = src_outputs.gather(index=first.unsqueeze(2).repeat(1, 1, src_outputs.size(-1)), dim=1) # (bsz, max_len, 768)  # 取sentence内的encoder_output
+            mask = first.eq(0)
+            src_outputs = src_outputs.gather(index=first.unsqueeze(2).repeat(1, 1, src_outputs.size(-1)), dim=1)
         else:
             mask = torch.zeros_like(src_tokens, dtype=torch.bool, device=src_tokens.device)
 
         mask = mask.unsqueeze(1)
+        
+        # Raw token embeddings are always float, no need to dequantize
+        input_embed = self.dropout_layer(self.decoder.embed_tokens(src_tokens))
 
-        input_embed = self.dropout_layer(self.decoder.embed_tokens(src_tokens))  # bsz x max_word_len x hidden_size
-
-        src_img_outputs = self.dequant_img_outputs(src_img_outputs) if src_img_outputs is not None else None
-        input_img_embed = self.dequant_img_outputs(input_img_embed) if input_img_embed is not None else None
-
-        if self.avg_feature:  # 先把feature合并一下
-            src_outputs = (src_outputs + input_embed)/2
+        if self.avg_feature:
+            src_outputs = (src_outputs + input_embed) / 2
             if src_img_outputs is not None and input_img_embed is not None:
-                src_img_outputs = (src_img_outputs + input_img_embed) /2
+                src_img_outputs = (src_img_outputs + input_img_embed) / 2
 
         word_scores = torch.einsum('blh,bnh->bln', hidden_state, src_outputs)
+        
+        # This condition will now correctly evaluate based on the text_only flag
         if src_img_outputs is not None:
             img_scores = torch.einsum('blh,bnh->bln', hidden_state, src_img_outputs)
+            if not self.avg_feature and input_img_embed is not None:
+                gen_img_scores = torch.einsum('blh,bnh->bln', hidden_state, input_img_embed)
+                img_scores = (gen_img_scores + img_scores) / 2
         else:
-            img_scores = None
+            img_scores = None # This path should only be taken when text_only=True
+
+        if not self.avg_feature:
+            gen_scores = torch.einsum('blh,bnh->bln', hidden_state, input_embed)
+            word_scores = (gen_scores + word_scores) / 2
 
         if not self.avg_feature:
             gen_scores = torch.einsum('blh,bnh->bln', hidden_state, input_embed)  
