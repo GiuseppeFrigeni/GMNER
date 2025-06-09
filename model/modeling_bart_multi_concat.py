@@ -272,7 +272,7 @@ class EncoderLayer(nn.Module):
         )
         x = F.dropout(x, p=self.dropout, training=self.training)
 
-        x = self.attn_add_func.add(residual,x)
+        x = residual + x
 
         if not self.normalize_before:
             x = self.self_attn_layer_norm(x)
@@ -492,7 +492,7 @@ class DecoderLayer(nn.Module):
         )
 
         x = F.dropout(x, p=self.dropout, training=self.training)
-        x = self.attn_add_func.add(residual,x)
+        x = residual + x
         if not self.normalize_before:
             x = self.self_attn_layer_norm(x)
 
