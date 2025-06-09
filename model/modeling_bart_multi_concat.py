@@ -750,6 +750,7 @@ class Attention(nn.Module):
             saved_state = None
             layer_state = {}
 
+        q = self.q_proj(query)
         q = q * self.scaling
         
         if static_kv:
