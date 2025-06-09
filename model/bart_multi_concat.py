@@ -1,5 +1,4 @@
 import torch
-import torch.ao.quantization
 from .modeling_bart_multi_concat import BartEncoder, BartDecoder, BartModel
 from transformers import BartTokenizer
 from .utils import seq_len_to_mask
@@ -239,13 +238,10 @@ class FBartEncoder(Seq2SeqEncoder):
         assert isinstance(encoder, BartEncoder)
         self.bart_encoder = encoder
 
-        self.dequant_for_mask_image = torch.ao.quantization.DeQuantStub()
-
     def forward(self, src_tokens, image_feature, src_seq_len, text_only=False):
         mask = seq_len_to_mask(src_seq_len, max_len=src_tokens.size(1))
         if not text_only:
-            image_feature_fp32_for_mask = self.dequant_for_mask_image(image_feature)
-            image_mask = mask_image(image_feature_fp32_for_mask)
+            image_mask = mask_image(image_feature)
         else:
             image_mask = None    
 
@@ -381,9 +377,6 @@ class CaGFBartDecoder(FBartDecoder):
                                              nn.ReLU(),
                                              nn.Linear(hidden_size,self.box_num))
 
-        self.dequant_before_mm = torch.ao.quantization.DeQuantStub()
-        self.dequant_gather = torch.ao.quantization.DeQuantStub()
-        self.dequant_img_outputs = torch.ao.quantization.DeQuantStub()
 
 
     def forward(self, img_feat_, tokens, state, text_only=False):  
@@ -453,7 +446,6 @@ class CaGFBartDecoder(FBartDecoder):
         embed_tokens_weight_for_tags = self.decoder.embed_tokens.weight[self.label_start_id:self.label_end_id]
 
 
-        hidden_state = self.dequant_before_mm(hidden_state)
         eos_scores = F.linear(hidden_state, self.dropout_layer(embed_tokens_weight_for_eos))
         tag_scores = F.linear(hidden_state, self.dropout_layer(embed_tokens_weight_for_tags))
 
@@ -487,7 +479,6 @@ class CaGFBartDecoder(FBartDecoder):
         if hasattr(self, 'encoder_mlp') and self.encoder_mlp is not None and src_outputs is not None:
             src_outputs = self.encoder_mlp(src_outputs)
 
-        src_outputs = self.dequant_gather(src_outputs) 
         
         if first is not None:
             mask = first.eq(0)  # bsz x 1 x max_word_len 
@@ -499,8 +490,7 @@ class CaGFBartDecoder(FBartDecoder):
 
         input_embed = self.dropout_layer(self.decoder.embed_tokens(src_tokens))  # bsz x max_word_len x hidden_size
 
-        src_img_outputs = self.dequant_img_outputs(src_img_outputs) if src_img_outputs is not None else None
-        input_img_embed = self.dequant_img_outputs(input_img_embed) if input_img_embed is not None else None
+
 
         if self.avg_feature:  # 先把feature合并一下
             src_outputs = (src_outputs + input_embed)/2

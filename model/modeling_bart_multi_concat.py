@@ -21,8 +21,6 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import torch
 import torch.nn.functional as F
-import torch.ao.quantization
-from torch.ao.nn.quantized import FloatFunctional 
 from torch import Tensor, nn
 from torch.nn import CrossEntropyLoss
 
@@ -254,16 +252,6 @@ class EncoderLayer(nn.Module):
         self.fc2 = nn.Linear(config.encoder_ffn_dim, self.embed_dim)
         self.final_layer_norm = LayerNorm(self.embed_dim)
 
-        self.dequant_after_add = torch.ao.quantization.DeQuantStub() # If attn expects Q input
-
-        self.ffn_add_func = FloatFunctional() # For residual add in FFN
-        self.attn_add_func = FloatFunctional() # For residual add after attention
-
-        self.quant_before_fc1 = torch.ao.quantization.QuantStub()
-        self.dequant_after_fc2 = torch.ao.quantization.DeQuantStub()
-
-        self.quant_output = torch.ao.quantization.QuantStub()
-
     def forward(self, x, encoder_padding_mask, output_attentions=False):
         """
         Args:
@@ -285,7 +273,6 @@ class EncoderLayer(nn.Module):
         x = F.dropout(x, p=self.dropout, training=self.training)
 
         x = self.attn_add_func.add(residual,x)
-        x = self.dequant_after_add(x)
 
         if not self.normalize_before:
             x = self.self_attn_layer_norm(x)
@@ -294,16 +281,13 @@ class EncoderLayer(nn.Module):
         residual = x
         if self.normalize_before:
             x = self.final_layer_norm(x)
-        x = self.quant_before_fc1(x)
         x = self.activation_fn(self.fc1(x))
         x = F.dropout(x, p=self.activation_dropout, training=self.training)
         x = self.fc2(x)
         x = F.dropout(x, p=self.dropout, training=self.training)
-        x = self.dequant_after_fc2(x)
         x = residual + x
         if not self.normalize_before:
             x = self.final_layer_norm(x)
-        x = self.quant_output(x)
 
         return x, attn_weights
 
@@ -349,11 +333,6 @@ class BartEncoder(nn.Module):
         # mbart has one extra layer_norm
         self.layer_norm = LayerNorm(config.d_model) if config.add_final_layer_norm else None
 
-        #self.quant_before_ln = torch.ao.quantization.QuantStub()
-        self.quant_image_feature = torch.ao.quantization.QuantStub()
-        self.quant_text_path_before_cat = torch.ao.quantization.QuantStub()
-        self.dequant_before_isnan = torch.ao.quantization.DeQuantStub()
-        self.quant_end_encoder_layer = torch.ao.quantization.QuantStub()
     
     def forward(self, input_ids, image_feature, attention_mask=None,image_mask =None, output_attentions=False, output_hidden_states=False, return_dict=False, text_only=False):
         """
@@ -380,7 +359,6 @@ class BartEncoder(nn.Module):
         inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale
         embed_pos = self.embed_positions(input_ids)
         x = inputs_embeds + embed_pos
-        #x = self.quant_before_ln(x)
         x = self.layernorm_embedding(x)
         x = F.dropout(x, p=self.dropout, training=self.training)
 
@@ -389,12 +367,10 @@ class BartEncoder(nn.Module):
         if not text_only:
             ############## 拼接图像 添加掩码
             # import pdb;pdb.set_trace()
-            image_feature = self.quant_image_feature(image_feature)
             img_feat_raw = self.img_proj(image_feature)
 
             # img_feat = self.layernorm_image_feature(img_feat)
             img_feat = F.dropout(img_feat_raw, p=self.dropout, training=self.training)
-            x = self.quant_text_path_before_cat(x)
             x = torch.cat((img_feat,x),dim=1)
 
 
@@ -416,7 +392,6 @@ class BartEncoder(nn.Module):
                 attn = None
             else:
                 x, attn = encoder_layer_module(x, attention_mask, output_attentions=output_attentions)
-                x = self.dequant_before_isnan(x)
                 if torch.isnan(x).any(): # This was your existing check for any batch
 
                     if output_hidden_states:
@@ -442,7 +417,6 @@ class BartEncoder(nn.Module):
             if output_attentions:
                 all_attentions = all_attentions + (attn,)
             
-            x = self.quant_end_encoder_layer(x)
 
         if self.layer_norm:
             x = self.layer_norm(x)
@@ -489,16 +463,6 @@ class DecoderLayer(nn.Module):
         self.fc2 = nn.Linear(config.decoder_ffn_dim, self.embed_dim)
         self.final_layer_norm = LayerNorm(self.embed_dim)
 
-        self.ffn_add_func = FloatFunctional() # For residual add in FFN
-        self.attn_add_func = FloatFunctional() # For residual add after attention
-
-        self.dequant_after_add = torch.ao.quantization.DeQuantStub()
-        self.quant_before_fc1 = torch.ao.quantization.QuantStub()
-        self.dequant_after_fc2 = torch.ao.quantization.DeQuantStub()
-        self.quant_output = torch.ao.quantization.QuantStub()
-
-        self.quant_before_encoder_attn = torch.ao.quantization.QuantStub()
-        self.dequant_after_encoder_attn = torch.ao.quantization.DeQuantStub()
 
     def forward(
             self,
@@ -529,7 +493,6 @@ class DecoderLayer(nn.Module):
 
         x = F.dropout(x, p=self.dropout, training=self.training)
         x = self.attn_add_func.add(residual,x)
-        x = self.dequant_after_add(x)
         if not self.normalize_before:
             x = self.self_attn_layer_norm(x)
 
@@ -539,7 +502,6 @@ class DecoderLayer(nn.Module):
         assert self.encoder_attn.cache_key != self.self_attn.cache_key
         if self.normalize_before:
             x = self.encoder_attn_layer_norm(x)
-        x = self.quant_before_encoder_attn(x)
         x, _ = self.encoder_attn(
             query=x,
             key=encoder_hidden_states,
@@ -547,7 +509,6 @@ class DecoderLayer(nn.Module):
             layer_state=layer_state,  # mutates layer state
         )
         x = F.dropout(x, p=self.dropout, training=self.training)
-        x = self.dequant_after_encoder_attn(x)
         x = residual + x
         if not self.normalize_before:
             x = self.encoder_attn_layer_norm(x)
@@ -555,17 +516,14 @@ class DecoderLayer(nn.Module):
         residual = x
         if self.normalize_before:
             x = self.final_layer_norm(x)
-        x = self.quant_before_fc1(x)
         x = self.activation_fn(self.fc1(x))
         x = F.dropout(x, p=self.activation_dropout, training=self.training)
         x = self.fc2(x)
         x = F.dropout(x, p=self.dropout, training=self.training)
-        x = self.dequant_after_fc2(x)
         x = residual + x
         if not self.normalize_before:
             x = self.final_layer_norm(x)
 
-        x = self.quant_output(x)
         return (
             x,
             self_attn_weights,
@@ -609,7 +567,6 @@ class BartDecoder(nn.Module):
         self.layer_norm = LayerNorm(config.d_model) if config.add_final_layer_norm else None
         self.config = config
 
-        self.quant_before_decoder = torch.ao.quantization.QuantStub()
 
     def forward(
             self,
@@ -687,7 +644,6 @@ class BartDecoder(nn.Module):
         all_self_attns = () if output_attentions else None
         next_decoder_cache = []
 
-        x= self.quant_before_decoder(x)
         for idx, decoder_layer in enumerate(self.layers):
             # add LayerDrop (see https://arxiv.org/abs/1909.11556 for description)
             if output_hidden_states:
@@ -766,12 +722,6 @@ class Attention(nn.Module):
         self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
         self.cache_key = "encoder_decoder" if self.encoder_decoder_attention else "self"
 
-        self.quant_before_proj = torch.ao.quantization.QuantStub()
-        self.dequant_q_proj = torch.ao.quantization.DeQuantStub()
-        self.dequant_v_proj = torch.ao.quantization.DeQuantStub()
-        self.dequant_k_proj = torch.ao.quantization.DeQuantStub()
-
-        self.quant_before_out_proj = torch.ao.quantization.QuantStub()
 
     def _shape(self, tensor, seq_len, bsz):
         return tensor.contiguous().view(seq_len, bsz * self.num_heads, self.head_dim).transpose(0, 1)
@@ -800,8 +750,6 @@ class Attention(nn.Module):
             saved_state = None
             layer_state = {}
 
-        #query = self.quant_before_proj(query)
-        q = self.dequant_q_proj(self.q_proj(query))
         q = q * self.scaling
         
         if static_kv:
@@ -814,10 +762,7 @@ class Attention(nn.Module):
             k = self.k_proj(query)
             v = self.v_proj(query)
 
-        if k is not None:
-            k = self.dequant_k_proj(k)
-        if v is not None:
-            v = self.dequant_v_proj(v)
+
 
         q = self._shape(q, tgt_len, bsz)
         if k is not None:
@@ -866,8 +811,6 @@ class Attention(nn.Module):
         attn_output = torch.bmm(attn_probs, v)
         assert attn_output.size() == (bsz * self.num_heads, tgt_len, self.head_dim)
         attn_output = attn_output.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
-        #output of bmm is 32fp so we need to quantize it
-        attn_output = self.quant_before_out_proj(attn_output)
         attn_output = self.out_proj(attn_output)
         if output_attentions:
             attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
