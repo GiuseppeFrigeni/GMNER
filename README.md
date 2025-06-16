@@ -4,7 +4,7 @@ In this repo there are the code and the notebook used for the Project for the ex
 
 ## Requrirements
 There are no special requirements for Kaggle as can be seen on the notebook as of June 2025:
-- pytorch: 2.5.1
+- pytorch 2.5.1
 - transformers 4.51.1
 
 ##  Main objectives
