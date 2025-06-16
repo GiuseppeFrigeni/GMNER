@@ -3,7 +3,9 @@
 In this repo there are the code and the notebook used for the Project for the exam of Computer Vision 2024-2025. The chosen topic is based on the paper [Grounded Multimodal Named Entity Recognition on Social Media](https://aclanthology.org/2023.acl-long.508.pdf).
 
 ## Requrirements
-There are no special requirements for Kaggle as can be seen on the notebook as of June 2025.
+There are no special requirements for Kaggle as can be seen on the notebook as of June 2025:
+pytorch: 2.5.1
+transformers 4.51.1
 
 ##  Main objectives
 
