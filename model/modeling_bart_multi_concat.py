@@ -29,7 +29,9 @@ from torch.nn import CrossEntropyLoss
 
 from transformers.activations import ACT2FN
 from transformers import PreTrainedModel, BartConfig
-from transformers.modeling_outputs import BaseModelOutput, BaseModelOutputWithPast, Seq2SeqModelOutput, Seq2SeqLMOutput, Seq2SeqSequenceClassifierOutput, Seq2SeqQuestionAnsweringModelOutput
+from transformers.modeling_outputs import BaseModelOutput, BaseModelOutputWithPast, Seq2SeqModelOutput, 
+from transformers.modeling_outputs import Seq2SeqLMOutput, Seq2SeqSequenceClassifierOutput, 
+from transformers.modeling_outputs import Seq2SeqQuestionAnsweringModelOutput
 from transformers.utils import add_start_docstrings, add_code_sample_docstrings
 from transformers.utils import replace_return_docstrings, logging, add_end_docstrings 
 
